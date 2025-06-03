@@ -24,7 +24,6 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
     - summary: str (multi‐line)
     - survey_responses: dict where each key is a question string, and each value is a tuple:
          (choice_str, description_str)
-       e.g. { "Did weather cause any delays?": ("Yes", "Heavy rain in morning"), ... }
     - image_files: list of in‐memory file‐like objects for images (up to 8)
     """
     # Create a temporary file for the PDF
@@ -54,7 +53,7 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
         # If there is a non‐empty description, draw it in smaller text
         if desc.strip() != "":
             c.setFont("Helvetica-Oblique", 10)
-            c.drawString(72, y, f"  • {desc}")
+            c.drawString(72, y, f"• {desc}")
             c.setFont("Helvetica", 12)
             y -= 14
         # Check if we’re too low on the page and need a new page
@@ -181,6 +180,7 @@ visitor_name = st.text_input("Your Name", max_chars=50)
 visit_date = st.date_input("Date of Visit", value=date.today())
 summary = st.text_area("Brief Summary", help="Describe what you saw/did on site", height=120)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Survey Questions (all 9)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -218,4 +218,112 @@ if choice4 in ("No", "Yes"):
 survey_responses["Any schedule delays occur?"] = (choice4, desc4)
 
 # 5. Materials on site?
-choice5 = st.radio("5. Materials on site?", ("N/A", "No", "Yes"), index=0, horizontal=Tru
+choice5 = st.radio("5. Materials on site?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc5 = ""
+if choice5 in ("No", "Yes"):
+    desc5 = st.text_input("Description (materials)", "")
+survey_responses["Materials on site?"] = (choice5, desc5)
+
+# 6. Contractor and Subcontractor Equipment onsite?
+choice6 = st.radio("6. Contractor and Subcontractor Equipment onsite?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc6 = ""
+if choice6 in ("No", "Yes"):
+    desc6 = st.text_input("Description (equipment on site)", "e.g., 4 work trucks, 1 water truck, 1-54k loader, …")
+survey_responses["Contractor and Subcontractor Equipment onsite?"] = (choice6, desc6)
+
+# 7. Testing?
+choice7 = st.radio("7. Testing?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc7 = ""
+if choice7 in ("No", "Yes"):
+    desc7 = st.text_input("Description (testing)", "")
+survey_responses["Testing?"] = (choice7, desc7)
+
+# 8. Any visitors on site?
+choice8 = st.radio("8. Any visitors on site?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc8 = ""
+if choice8 in ("No", "Yes"):
+    desc8 = st.text_input("Description (visitors)", "")
+survey_responses["Any visitors on site?"] = (choice8, desc8)
+
+# 9. Any accidents on site today?
+choice9 = st.radio("9. Any accidents on site today?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc9 = ""
+if choice9 in ("No", "Yes"):
+    desc9 = st.text_input("Description (accidents)", "")
+survey_responses["Any accidents on site today?"] = (choice9, desc9)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5) File uploaders (two separate uploaders, each up to 4 images → total 8)
+# ─────────────────────────────────────────────────────────────────────────────
+st.write("---")  # horizontal separator
+
+uploaded_batch1 = st.file_uploader(
+    label="Upload images (batch 1 of 2, up to 4 pics)",
+    type=["png", "jpg", "jpeg"],
+    accept_multiple_files=True,
+    key="batch1"
+)
+if len(uploaded_batch1) > 4:
+    st.warning("Batch 1: Please upload at most 4 images.")
+    uploaded_batch1 = uploaded_batch1[:4]
+
+uploaded_batch2 = st.file_uploader(
+    label="Upload images (batch 2 of 2, up to 4 pics)",
+    type=["png", "jpg", "jpeg"],
+    accept_multiple_files=True,
+    key="batch2"
+)
+if len(uploaded_batch2) > 4:
+    st.warning("Batch 2: Please upload at most 4 images.")
+    uploaded_batch2 = uploaded_batch2[:4]
+
+# Combine the two batches into a single list of up to 8 images
+all_images = uploaded_batch1 + uploaded_batch2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6) Email field
+# ─────────────────────────────────────────────────────────────────────────────
+recipient_email = st.text_input("Email To Send Report To", max_chars=100)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7) Generate & Email button
+# ─────────────────────────────────────────────────────────────────────────────
+if st.button("Generate & Email Report"):
+    # Basic validation
+    if not visitor_name or not summary or not recipient_email:
+        st.error("Please fill in all required fields: name, summary, and recipient email.")
+    else:
+        # 1) Prepare image byte streams
+        image_bytes_list = [img for img in all_images]
+
+        # 2) Generate the PDF (with survey responses and up to 8 images)
+        pdf_path = generate_pdf(
+            visitor_name,
+            visit_date.strftime("%Y-%m-%d"),
+            summary,
+            survey_responses,
+            image_bytes_list
+        )
+
+        # 3) Send email (no videos to attach)
+        try:
+            send_email(
+                recipient_email,
+                visitor_name,
+                visit_date.strftime("%Y-%m-%d"),
+                pdf_path,
+                video_paths=None  # no videos in this version
+            )
+            st.success(f"Email sent to {recipient_email}!")
+        except Exception as e:
+            st.error(f"Failed to send email: {e}")
+
+        # 4) Clean up the temporary PDF file
+        try:
+            os.unlink(pdf_path)
+        except:
+            pass
+
+        # (No video temp files to clean up since we removed videos)
