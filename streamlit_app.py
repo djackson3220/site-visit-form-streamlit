@@ -1,12 +1,13 @@
 import os
 import tempfile
 from datetime import datetime
-import requests
 
+import requests
 import streamlit as st
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from zoneinfo import ZoneInfo  # ← For Albuquerque timezone
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -59,15 +60,16 @@ def generate_pdf(
 ) -> bytes:
     """
     Creates a PDF recording:
-      • Current timestamp
+      • Current timestamp (ABQ local time)
       • Albuquerque temperature (if api_key is valid; otherwise "N/A")
       • Visitor name, visit_date, site_address, summary
       • Survey answers (9 questions)
       • Up to 8 images (two batches of 4)
     Returns the PDF bytes.
     """
-    # 1) Fetch current time & temperature
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 1) Fetch current time & temperature (inside PDF as well)
+    abq_tz = ZoneInfo("America/Denver")
+    now_abq = datetime.now(abq_tz).strftime("%Y-%m-%d %H:%M:%S")
     temp_str = get_current_temperature(api_key) if api_key else "N/A"
 
     # 2) Create a temporary file for the PDF
@@ -84,8 +86,8 @@ def generate_pdf(
 
     # ── Time & Temperature ───────────────────────────────────────────────────────
     c.setFont("Helvetica", 10)
-    c.drawString(50, height - 80, f"Generated At     : {now}")
-    c.drawString(50, height - 95, f"Temperature (°F): {temp_str}")
+    c.drawString(50, height - 80, f"Generated At (ABQ) : {now_abq}")
+    c.drawString(50, height - 95, f"Temperature (°F)  : {temp_str}")
 
     # ── Divider ───────────────────────────────────────────────────────────────────
     c.line(50, height - 105, width - 50, height - 105)
@@ -114,12 +116,11 @@ def generate_pdf(
     c.drawString(50, height - 195, "Brief Summary:")
     text_obj = c.beginText(50, height - 215)
     text_obj.setFont("Helvetica", 11)
-    # Wrap lines (simple): split on newline, let ReportLab handle wrapping
     for line in summary.split("\n"):
         text_obj.textLine(line)
     c.drawText(text_obj)
 
-    # Calculate where to start drawing the survey
+    # Compute where to start drawing the survey
     summary_lines = summary.count("\n") + 1
     survey_y_start = height - 215 - (summary_lines * 12) - 20
 
@@ -172,7 +173,7 @@ def generate_pdf(
                 scaled_w = 200
                 scaled_h = ih * scale
 
-                # If drawing this image exceeds the right margin, wrap to next “row”
+                # Wrap if beyond right margin
                 if x + scaled_w > width - 50:
                     x = start_x
                     start_y -= (max_h + 20)
@@ -182,7 +183,6 @@ def generate_pdf(
                 x += scaled_w + 20
                 max_h = max(max_h, scaled_h)
             except Exception:
-                # If an image fails to load, skip it
                 continue
 
         return start_y - max_h - 20
@@ -314,9 +314,10 @@ owm_api_key = st.text_input(
     help="Get a free key at https://openweathermap.org/ → Sign Up → API Keys",
 )
 
-# 4.e) Display the current time and (conditionally) temperature on the page
-now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-st.write(f"**Current Time:** {now}")
+# 4.e) Display the current time (ABQ) and (conditionally) temperature on the page
+abq_tz = ZoneInfo("America/Denver")
+now_abq = datetime.now(abq_tz).strftime("%Y-%m-%d %H:%M:%S")
+st.write(f"**Current Time (ABQ):** {now_abq}")
 
 if owm_api_key:
     temp_display = get_current_temperature(owm_api_key)
@@ -359,10 +360,9 @@ if generate_pdf_button:
                     api_key=owm_api_key,
                 )
         except Exception as e:
-            # Show the raw exception message so you can debug
             st.error("🚨 Internal error while generating PDF:\n\n" + repr(e))
         else:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(abq_tz).strftime("%Y%m%d_%H%M%S")
             default_filename = f"site_visit_report_{timestamp}.pdf"
             st.success("PDF generated successfully!")
             st.download_button(
