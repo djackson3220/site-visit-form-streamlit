@@ -15,16 +15,19 @@ from reportlab.lib.utils import ImageReader
 st.set_page_config(page_title="Site Visit Report", layout="centered")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) Helper: generate PDF with embedded images and survey responses
+# 2) Helper: generate PDF with embedded images and full survey
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
     """
-    visitor: str
-    visit_date: str (YYYY-MM-DD)
-    summary: str
-    survey_responses: dict of question→ boolean (True/False)
-    image_files: list of in-memory file‐like objects for images
+    - visitor: str
+    - visit_date: str (YYYY-MM-DD)
+    - summary: str (multi‐line)
+    - survey_responses: dict where each key is a question string, and each value is a tuple:
+         (choice_str, description_str)
+       e.g. { "Did weather cause any delays?": ("Yes", "Heavy rain in morning"), ... }
+    - image_files: list of in‐memory file‐like objects for images (up to 8)
     """
+    # Create a temporary file for the PDF
     tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     c = canvas.Canvas(tmp_pdf.name, pagesize=letter)
     width, height = letter
@@ -36,56 +39,106 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
     # ─── Visitor Info ─────────────────────────────────────────────────────────
     c.setFont("Helvetica", 12)
     c.drawString(50, height - 80, f"Visitor: {visitor}")
-    c.drawString(50, height - 100, f"Date: {visit_date}")
+    c.drawString(300, height - 80, f"Date: {visit_date}")
 
-    # ─── SURVEY ────────────────────────────────────────────────────────────────
+    # ─── Survey Section ───────────────────────────────────────────────────────
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, height - 120, "Survey:")
+    c.drawString(50, height - 110, "Survey:")
+    y = height - 130
     c.setFont("Helvetica", 12)
-    # Use the boolean from survey_responses to print "Yes" or "No"
-    c.drawString(
-        60,
-        height - 140,
-        f"- Did weather cause any delays: {'Yes' if survey_responses.get('Did weather cause any delays') else 'No'}"
-    )
 
-    # ─── Summary text ─────────────────────────────────────────────────────────
-    text_obj = c.beginText(50, height - 180)
-    text_obj.setFont("Helvetica", 12)
-    text_obj.textLine("Brief Summary:")
-    text_obj.moveCursor(0, 10)
+    for question, (choice, desc) in survey_responses.items():
+        # Draw the question and the choice
+        c.drawString(60, y, f"- {question} [{choice}]")
+        y -= 18
+        # If there is a non‐empty description, draw it in smaller text
+        if desc.strip() != "":
+            c.setFont("Helvetica-Oblique", 10)
+            c.drawString(72, y, f"  • {desc}")
+            c.setFont("Helvetica", 12)
+            y -= 14
+        # Check if we’re too low on the page and need a new page
+        if y < 120:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(50, y, "Survey (cont’d):")
+            c.setFont("Helvetica", 12)
+            y -= 20
+
+    # ─── Brief Summary ─────────────────────────────────────────────────────────
+    # Leave some space below survey
+    if y < 200:
+        c.showPage()
+        y = height - 50
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "Brief Summary:")
+    y -= 20
+    c.setFont("Helvetica", 12)
+
     for line in summary.split("\n"):
-        text_obj.textLine(line)
-    c.drawText(text_obj)
+        c.drawString(60, y, line)
+        y -= 16
+        if y < 120:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica", 12)
 
     # ─── Images ────────────────────────────────────────────────────────────────
-    # Place each image, scaled to max width=200 (maintaining aspect ratio)
-    y_pos_images = height - 300
+    # Place each image at most 2 per row, scaled to max width=200 (maintaining aspect)
+    # Start below summary if space; else new page
+    if y < 300:
+        c.showPage()
+        y = height - 50
+
+    x_offset = 50
+    img_max_w = 200
+    gap = 20
+    count = 0
     for img_bytes in image_files:
         try:
             img = ImageReader(img_bytes)
             iw, ih = img.getSize()
             aspect = ih / iw
-            img_w = 200
-            img_h = 200 * aspect
-            if y_pos_images - img_h < 50:
+            img_w = img_max_w
+            img_h = img_max_w * aspect
+
+            # If no room vertically, make new page
+            if y - img_h < 50:
                 c.showPage()
-                y_pos_images = height - 50
-            c.drawImage(img, 50, y_pos_images - img_h, width=img_w, height=img_h)
-            y_pos_images -= (img_h + 20)
+                y = height - 50
+                x_offset = 50
+                count = 0
+
+            c.drawImage(img, x_offset, y - img_h, width=img_w, height=img_h)
+
+            # Move right for next image
+            if count % 2 == 0:
+                x_offset += img_max_w + gap
+            else:
+                # Two images placed → move down to new row
+                x_offset = 50
+                y -= img_h + gap
+
+            count += 1
+
         except Exception:
+            # Skip invalid images
             continue
 
-    # ─── Finalize ──────────────────────────────────────────────────────────────
     c.showPage()
     c.save()
-    return tmp_pdf.name  # Return path to the PDF file
+    return tmp_pdf.name  # Path to the generated PDF file
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) Helper: send email with PDF + video attachments (Office365 SMTP)
+# 3) Helper: send email with attachment (Office365 SMTP)
 # ─────────────────────────────────────────────────────────────────────────────
-def send_email(recipient, visitor, visit_date, pdf_path, video_paths):
+def send_email(recipient, visitor, visit_date, pdf_path, video_paths=None):
+    """
+    Emails the PDF at pdf_path to the recipient. (video_paths is unused since we no longer attach videos.)
+    """
     EMAIL_USER = os.getenv("STREAMLIT_EMAIL_USER")
     EMAIL_PASS = os.getenv("STREAMLIT_EMAIL_PASS")
 
@@ -95,8 +148,7 @@ def send_email(recipient, visitor, visit_date, pdf_path, video_paths):
     msg["To"] = recipient
     msg.set_content(
         f"Hello,\n\n"
-        f"Attached is the site visit report (PDF) by {visitor} on {visit_date}.\n"
-        f"Videos (if any) are attached separately.\n\n"
+        f"Attached is the site visit report (PDF) by {visitor} on {visit_date}.\n\n"
         f"Regards,\n{visitor}"
     )
 
@@ -109,18 +161,6 @@ def send_email(recipient, visitor, visit_date, pdf_path, video_paths):
         subtype="pdf",
         filename=f"site_visit_{visitor}_{visit_date}.pdf"
     )
-
-    # Attach each video
-    for vid_path in video_paths:
-        with open(vid_path, "rb") as vf:
-            vdata = vf.read()
-        vname = os.path.basename(vid_path)
-        msg.add_attachment(
-            vdata,
-            maintype="application",
-            subtype="octet-stream",
-            filename=vname
-        )
 
     # Send via SMTP (Office365)
     with smtplib.SMTP("smtp.office365.com", 587) as server:
@@ -141,82 +181,41 @@ visitor_name = st.text_input("Your Name", max_chars=50)
 visit_date = st.date_input("Date of Visit", value=date.today())
 summary = st.text_area("Brief Summary", help="Describe what you saw/did on site", height=120)
 
-# ─── NEW: Single checkbox ─────────────────────────────────────────────────────
-delay_checkbox = st.checkbox("Did weather cause any delays?")
+# ─────────────────────────────────────────────────────────────────────────────
+#  Survey Questions (all 9)
+# ─────────────────────────────────────────────────────────────────────────────
+# For each question, we use a three‐option radio: ["N/A", "No", "Yes"].
+# If the user selects "No" or "Yes", a description box appears.
 
-# Initialize survey_responses with our one question
-survey_responses = {
-    "Did weather cause any delays": delay_checkbox
-}
+survey_responses = {}
 
-# — File uploaders —
-uploaded_images = st.file_uploader(
-    label="Upload up to 4 images",
-    type=["png", "jpg", "jpeg"],
-    accept_multiple_files=True
-)
-if len(uploaded_images) > 4:
-    st.warning("Please upload at most 4 images.")
-    uploaded_images = uploaded_images[:4]
+# 1. Did weather cause any delays?
+choice1 = st.radio("1. Did weather cause any delays?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc1 = ""
+if choice1 in ("No", "Yes"):
+    desc1 = st.text_input("Description (weather delays)", "")
+survey_responses["Did weather cause any delays?"] = (choice1, desc1)
 
-uploaded_videos = st.file_uploader(
-    label="Upload up to 2 videos",
-    type=["mp4", "mov", "avi"],
-    accept_multiple_files=True
-)
-if len(uploaded_videos) > 2:
-    st.warning("Please upload at most 2 videos.")
-    uploaded_videos = uploaded_videos[:2]
+# 2. Any instruction Contractor and Contractor’s actions?
+choice2 = st.radio("2. Any instruction Contractor and Contractor’s actions?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc2 = ""
+if choice2 in ("No", "Yes"):
+    desc2 = st.text_input("Description (contractor actions)", "")
+survey_responses["Any instruction Contractor and Contractor’s actions?"] = (choice2, desc2)
 
-recipient_email = st.text_input("Email To Send Report To", max_chars=100)
+# 3. Any general comments or unusual events?
+choice3 = st.radio("3. Any general comments or unusual events?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc3 = ""
+if choice3 in ("No", "Yes"):
+    desc3 = st.text_input("Description (unusual events)", "")
+survey_responses["Any general comments or unusual events?"] = (choice3, desc3)
 
-# — Generate & Email button —
-if st.button("Generate & Email Report"):
-    # Basic validation
-    if not visitor_name or not summary or not recipient_email:
-        st.error("Please fill in all required fields: name, summary, and recipient email.")
-    else:
-        # 1) Prepare image byte streams
-        image_bytes_list = [img for img in uploaded_images]
+# 4. Any schedule delays occur?
+choice4 = st.radio("4. Any schedule delays occur?", ("N/A", "No", "Yes"), index=0, horizontal=True)
+desc4 = ""
+if choice4 in ("No", "Yes"):
+    desc4 = st.text_input("Description (schedule delays)", "")
+survey_responses["Any schedule delays occur?"] = (choice4, desc4)
 
-        # 2) Save videos to temp files
-        video_temp_paths = []
-        for vid_file in uploaded_videos:
-            suffix = os.path.splitext(vid_file.name)[1]
-            tmp_vid = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            tmp_vid.write(vid_file.getbuffer())
-            tmp_vid.close()
-            video_temp_paths.append(tmp_vid.name)
-
-        # 3) Generate the PDF (including survey_responses)
-        pdf_path = generate_pdf(
-            visitor_name,
-            visit_date.strftime("%Y-%m-%d"),
-            summary,
-            survey_responses,
-            image_bytes_list
-        )
-
-        # 4) Send email
-        try:
-            send_email(
-                recipient_email,
-                visitor_name,
-                visit_date.strftime("%Y-%m-%d"),
-                pdf_path,
-                video_temp_paths
-            )
-            st.success(f"Email sent to {recipient_email}!")
-        except Exception as e:
-            st.error(f"Failed to send email: {e}")
-
-        # 5) Clean up temp files
-        try:
-            os.unlink(pdf_path)
-        except:
-            pass
-        for path in video_temp_paths:
-            try:
-                os.unlink(path)
-            except:
-                pass
+# 5. Materials on site?
+choice5 = st.radio("5. Materials on site?", ("N/A", "No", "Yes"), index=0, horizontal=Tru
