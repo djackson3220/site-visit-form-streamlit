@@ -2,8 +2,9 @@ import os
 import tempfile
 import smtplib
 from email.message import EmailMessage
-from datetime import date
+from datetime import date, datetime
 
+import requests
 import streamlit as st
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -15,13 +16,46 @@ from reportlab.lib.utils import ImageReader
 st.set_page_config(page_title="Site Visit Report", layout="centered")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) Helper: generate PDF with embedded images, survey, and manual address
+# 2) Auto‐capture current time (server time) and approximate temperature (via IP)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_pdf(visitor, visit_date, address, summary, survey_responses, image_files):
+now = datetime.now()
+current_time_str = now.strftime("%Y-%m-%d %H:%M:%S")  # e.g. "2025-06-03 14:22:10"
+temperature_f = None
+
+try:
+    # 2A) Get approximate lat/lon from IP
+    geo_resp = requests.get("https://ipapi.co/json/")
+    geo_resp.raise_for_status()
+    geo_data = geo_resp.json()
+    lat = geo_data.get("latitude")
+    lon = geo_data.get("longitude")
+
+    if lat is not None and lon is not None:
+        # 2B) Query Open-Meteo for current weather (temperature in Celsius)
+        weather_url = (
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            "&current_weather=true"
+        )
+        weather_resp = requests.get(weather_url)
+        weather_resp.raise_for_status()
+        weather_data = weather_resp.json()
+        temp_c = weather_data["current_weather"]["temperature"]
+        temperature_f = temp_c * 9/5 + 32
+        temperature_f = round(temperature_f, 1)
+except Exception:
+    # If any step fails (no internet, API down, etc.), we'll leave temperature_f = None
+    temperature_f = None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3) Helper: generate PDF with images, survey, address, time & temperature
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_pdf(visitor, visit_date, address, current_time, temperature, summary, survey_responses, image_files):
     """
     - visitor: str
     - visit_date: str (YYYY-MM-DD)
     - address: str (manually entered)
+    - current_time: str (YYYY-MM-DD HH:MM:SS)
+    - temperature: float or None (in °F)
     - summary: str (multi‐line)
     - survey_responses: dict where each key is a question string, and each value is a tuple:
          (choice_str, description_str)
@@ -35,59 +69,69 @@ def generate_pdf(visitor, visit_date, address, summary, survey_responses, image_
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, height - 50, "Site Visit Report")
 
-    # ─── Visitor Info + Address ───────────────────────────────────────────────
+    # ─── Visitor Info, Address, Time & Temperature ────────────────────────────
     c.setFont("Helvetica", 12)
     c.drawString(50, height - 80, f"Visitor: {visitor}")
     c.drawString(300, height - 80, f"Date: {visit_date}")
+
+    # If an address was provided:
     if address.strip():
-        c.setFont("Helvetica", 12)
         c.drawString(50, height - 100, f"Site Address: {address}")
-        y = height - 120
+        y_pos = height - 120
     else:
-        y = height - 100
+        y_pos = height - 100
+
+    # Show current time
+    c.drawString(50, y_pos, f"Time: {current_time}")
+    y_pos -= 20
+
+    # Show temperature if available
+    if temperature is not None:
+        c.drawString(50, y_pos, f"Temperature (°F): {temperature}")
+        y_pos -= 20
 
     # ─── Survey Section ───────────────────────────────────────────────────────
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, y, "Survey:")
-    y -= 20
+    c.drawString(50, y_pos, "Survey:")
+    y_pos -= 20
     c.setFont("Helvetica", 12)
     for question, (choice, desc) in survey_responses.items():
-        c.drawString(60, y, f"- {question} [{choice}]")
-        y -= 18
-        if desc.strip() != "":
+        c.drawString(60, y_pos, f"- {question} [{choice}]")
+        y_pos -= 18
+        if desc.strip():
             c.setFont("Helvetica-Oblique", 10)
-            c.drawString(72, y, f"• {desc}")
+            c.drawString(72, y_pos, f"• {desc}")
             c.setFont("Helvetica", 12)
-            y -= 14
-        if y < 120:
+            y_pos -= 14
+        if y_pos < 120:
             c.showPage()
-            y = height - 50
+            y_pos = height - 50
             c.setFont("Helvetica-Bold", 14)
-            c.drawString(50, y, "Survey (cont’d):")
-            y -= 20
+            c.drawString(50, y_pos, "Survey (cont’d):")
+            y_pos -= 20
             c.setFont("Helvetica", 12)
 
     # ─── Brief Summary ─────────────────────────────────────────────────────────
-    if y < 200:
+    if y_pos < 200:
         c.showPage()
-        y = height - 50
+        y_pos = height - 50
 
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, y, "Brief Summary:")
-    y -= 20
+    c.drawString(50, y_pos, "Brief Summary:")
+    y_pos -= 20
     c.setFont("Helvetica", 12)
     for line in summary.split("\n"):
-        c.drawString(60, y, line)
-        y -= 16
-        if y < 120:
+        c.drawString(60, y_pos, line)
+        y_pos -= 16
+        if y_pos < 120:
             c.showPage()
-            y = height - 50
+            y_pos = height - 50
             c.setFont("Helvetica", 12)
 
     # ─── Images ────────────────────────────────────────────────────────────────
-    if y < 300:
+    if y_pos < 300:
         c.showPage()
-        y = height - 50
+        y_pos = height - 50
 
     x_offset = 50
     img_max_w = 200
@@ -101,19 +145,19 @@ def generate_pdf(visitor, visit_date, address, summary, survey_responses, image_
             img_w = img_max_w
             img_h = img_max_w * aspect
 
-            if y - img_h < 50:
+            if y_pos - img_h < 50:
                 c.showPage()
-                y = height - 50
+                y_pos = height - 50
                 x_offset = 50
                 count = 0
 
-            c.drawImage(img, x_offset, y - img_h, width=img_w, height=img_h)
+            c.drawImage(img, x_offset, y_pos - img_h, width=img_w, height=img_h)
 
             if count % 2 == 0:
                 x_offset += img_max_w + gap
             else:
                 x_offset = 50
-                y -= img_h + gap
+                y_pos -= img_h + gap
 
             count += 1
 
@@ -126,11 +170,11 @@ def generate_pdf(visitor, visit_date, address, summary, survey_responses, image_
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) Helper: send email with attachment (Office365 SMTP)
+# 4) Helper: send email via Gmail SMTP (App Password)
 # ─────────────────────────────────────────────────────────────────────────────
 def send_email(recipient, visitor, visit_date, pdf_path):
     """
-    Emails the PDF at pdf_path to the recipient.
+    Send the PDF via Gmail SMTP (using the App Password from Secrets).
     """
     EMAIL_USER = os.getenv("STREAMLIT_EMAIL_USER")
     EMAIL_PASS = os.getenv("STREAMLIT_EMAIL_PASS")
@@ -145,6 +189,7 @@ def send_email(recipient, visitor, visit_date, pdf_path):
         f"Regards,\n{visitor}"
     )
 
+    # Attach the PDF
     with open(pdf_path, "rb") as f:
         data = f.read()
     msg.add_attachment(
@@ -154,7 +199,7 @@ def send_email(recipient, visitor, visit_date, pdf_path):
         filename=f"site_visit_{visitor}_{visit_date}.pdf"
     )
 
-    with smtplib.SMTP("smtp.office365.com", 587) as server:
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.ehlo()
         server.starttls()
         server.ehlo()
@@ -163,22 +208,31 @@ def send_email(recipient, visitor, visit_date, pdf_path):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4) Streamlit UI
+# 5) Streamlit UI
 # ─────────────────────────────────────────────────────────────────────────────
 st.title("Site Visit Report 📝")
+
+# — Show current time and temperature at top of form —
+st.markdown(f"**Current Time:** {current_time_str}")
+if temperature_f is not None:
+    st.markdown(f"**Current Temperature (°F):** {temperature_f}")
+else:
+    st.markdown("**Current Temperature (°F):** Could not fetch")
+
+st.write("---")
 
 # — Basic fields —
 visitor_name = st.text_input("Your Name", max_chars=50)
 visit_date = st.date_input("Date of Visit", value=date.today())
 
-# ─── NEW: Manual Site Address field ─────────────────────────────────────────
+# — Manual Site Address field —
 address = st.text_input("Site Address / Location", "")
 
 summary = st.text_area("Brief Summary", help="Describe what you saw/did on site", height=120)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Survey Questions (all 9)
+# 6) Survey Questions (all 9)
 # ─────────────────────────────────────────────────────────────────────────────
 survey_responses = {}
 
@@ -247,9 +301,9 @@ survey_responses["Any accidents on site today?"] = (choice9, desc9)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5) File uploaders (two separate uploaders, each up to 4 images → total 8)
+# 7) File uploaders (two separate uploaders, each up to 4 images → total 8)
 # ─────────────────────────────────────────────────────────────────────────────
-st.write("---")  # horizontal separator
+st.write("---")
 
 uploaded_batch1 = st.file_uploader(
     label="Upload images (batch 1 of 2, up to 4 pics)",
@@ -275,12 +329,13 @@ all_images = uploaded_batch1 + uploaded_batch2
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6) Email field
+# 8) Email field
 # ─────────────────────────────────────────────────────────────────────────────
 recipient_email = st.text_input("Email To Send Report To", max_chars=100)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# 7) Generate & Email button
+# 9) Generate & Email button
 # ─────────────────────────────────────────────────────────────────────────────
 if st.button("Generate & Email Report"):
     if not visitor_name or not summary or not recipient_email:
@@ -289,11 +344,13 @@ if st.button("Generate & Email Report"):
         # 1) Prepare image byte streams
         image_bytes_list = [img for img in all_images]
 
-        # 2) Generate the PDF (including manual address, survey, and up to 8 images)
+        # 2) Generate the PDF (including address, time, temp, survey, and up to 8 images)
         pdf_path = generate_pdf(
             visitor_name,
             visit_date.strftime("%Y-%m-%d"),
             address,
+            current_time_str,
+            temperature_f,
             summary,
             survey_responses,
             image_bytes_list
