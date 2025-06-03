@@ -1,8 +1,13 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# streamlit_app.py
+# ─────────────────────────────────────────────────────────────────────────────
+
 import os
 import tempfile
 import smtplib
 from email.message import EmailMessage
 from datetime import date, datetime
+from zoneinfo import ZoneInfo       # ← For America/Denver timezone
 
 import requests
 import streamlit as st
@@ -11,55 +16,49 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1) Page config
+# 1) Page configuration
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Site Visit Report", layout="centered")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) Auto‐capture current time (server time) and approximate temperature (via IP)
+# 2) Auto-capture current time (America/Denver) and Albuquerque temperature
 # ─────────────────────────────────────────────────────────────────────────────
-now = datetime.now()
-current_time_str = now.strftime("%Y-%m-%d %H:%M:%S")  # e.g. "2025-06-03 14:22:10"
+# Get current datetime in the America/Denver time zone (covers Albuquerque)
+now = datetime.now(ZoneInfo("America/Denver"))
+current_time_str = now.strftime("%Y-%m-%d %H:%M:%S")  # e.g. "2025-06-04 14:22:10"
+
 temperature_f = None
-
 try:
-    # 2A) Get approximate lat/lon from IP
-    geo_resp = requests.get("https://ipapi.co/json/")
-    geo_resp.raise_for_status()
-    geo_data = geo_resp.json()
-    lat = geo_data.get("latitude")
-    lon = geo_data.get("longitude")
+    # ▪︎ Albuquerque’s fixed latitude/longitude
+    albu_lat = 35.0844
+    albu_lon = -106.6504
 
-    if lat is not None and lon is not None:
-        # 2B) Query Open-Meteo for current weather (temperature in Celsius)
-        weather_url = (
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-            "&current_weather=true"
-        )
-        weather_resp = requests.get(weather_url)
-        weather_resp.raise_for_status()
-        weather_data = weather_resp.json()
-        temp_c = weather_data["current_weather"]["temperature"]
-        temperature_f = temp_c * 9/5 + 32
-        temperature_f = round(temperature_f, 1)
+    # ▪︎ Query Open-Meteo for Albuquerque’s current weather (temp in °C)
+    weather_url = (
+        f"https://api.open-meteo.com/v1/forecast?"
+        f"latitude={albu_lat}&longitude={albu_lon}&current_weather=true"
+    )
+    weather_resp = requests.get(weather_url, timeout=5)
+    weather_resp.raise_for_status()
+    weather_data = weather_resp.json()
+    temp_c = weather_data["current_weather"]["temperature"]
+    temperature_f = round(temp_c * 9/5 + 32, 1)  # Convert to °F
 except Exception:
-    # If any step fails (no internet, API down, etc.), we'll leave temperature_f = None
+    # If the API call fails for any reason, leave temperature_f = None
     temperature_f = None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) Helper: generate PDF with images, survey, address, time & temperature
+# 3) Helper: Generate PDF (visitor info, address, time, temp, survey, images)
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_pdf(visitor, visit_date, address, current_time, temperature, summary, survey_responses, image_files):
     """
-    - visitor: str
-    - visit_date: str (YYYY-MM-DD)
-    - address: str (manually entered)
-    - current_time: str (YYYY-MM-DD HH:MM:SS)
-    - temperature: float or None (in °F)
-    - summary: str (multi‐line)
-    - survey_responses: dict where each key is a question string, and each value is a tuple:
-         (choice_str, description_str)
-    - image_files: list of in‐memory file‐like objects for images (up to 8)
+    Builds a PDF containing:
+      - Visitor name, date of visit, site address
+      - Current time (America/Denver) and Albuquerque temperature (°F)
+      - Survey questions + responses + optional descriptions
+      - Brief summary (multi-line)
+      - Up to 8 images (in two batches of 4 if needed)
+    Returns the path to a temporary PDF file.
     """
     tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     c = canvas.Canvas(tmp_pdf.name, pagesize=letter)
@@ -69,32 +68,33 @@ def generate_pdf(visitor, visit_date, address, current_time, temperature, summar
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, height - 50, "Site Visit Report")
 
-    # ─── Visitor Info, Address, Time & Temperature ────────────────────────────
+    # ─── Visitor Info / Address / Time / Temperature ──────────────────────────
     c.setFont("Helvetica", 12)
     c.drawString(50, height - 80, f"Visitor: {visitor}")
     c.drawString(300, height - 80, f"Date: {visit_date}")
 
-    # If an address was provided:
+    y_pos = height - 100
     if address.strip():
-        c.drawString(50, height - 100, f"Site Address: {address}")
-        y_pos = height - 120
-    else:
-        y_pos = height - 100
+        c.drawString(50, y_pos, f"Site Address: {address}")
+        y_pos -= 20
 
-    # Show current time
-    c.drawString(50, y_pos, f"Time: {current_time}")
+    c.drawString(50, y_pos, f"Time (America/Denver): {current_time}")
     y_pos -= 20
 
-    # Show temperature if available
     if temperature is not None:
-        c.drawString(50, y_pos, f"Temperature (°F): {temperature}")
+        c.drawString(50, y_pos, f"Albuquerque Temp (°F): {temperature}")
         y_pos -= 20
 
     # ─── Survey Section ───────────────────────────────────────────────────────
+    if y_pos < 200:
+        c.showPage()
+        y_pos = height - 50
+
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y_pos, "Survey:")
     y_pos -= 20
     c.setFont("Helvetica", 12)
+
     for question, (choice, desc) in survey_responses.items():
         c.drawString(60, y_pos, f"- {question} [{choice}]")
         y_pos -= 18
@@ -128,7 +128,7 @@ def generate_pdf(visitor, visit_date, address, current_time, temperature, summar
             y_pos = height - 50
             c.setFont("Helvetica", 12)
 
-    # ─── Images ────────────────────────────────────────────────────────────────
+    # ─── Images (up to 8) ─────────────────────────────────────────────────────
     if y_pos < 300:
         c.showPage()
         y_pos = height - 50
@@ -137,6 +137,7 @@ def generate_pdf(visitor, visit_date, address, current_time, temperature, summar
     img_max_w = 200
     gap = 20
     count = 0
+
     for img_bytes in image_files:
         try:
             img = ImageReader(img_bytes)
@@ -168,13 +169,15 @@ def generate_pdf(visitor, visit_date, address, current_time, temperature, summar
     c.save()
     return tmp_pdf.name
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 4) Helper: send email via Gmail SMTP (App Password)
+# 4) Helper: Send email via Gmail SMTP (App Password)
 # ─────────────────────────────────────────────────────────────────────────────
 def send_email(recipient, visitor, visit_date, pdf_path):
     """
-    Send the PDF via Gmail SMTP (using the App Password from Secrets).
+    Uses Gmail SMTP on smtp.gmail.com:587 with TLS, logging in via:
+      STREAMLIT_EMAIL_USER   (yourname@gmail.com)
+      STREAMLIT_EMAIL_PASS   (the 16-char App Password)
+    Attaches the generated PDF.
     """
     EMAIL_USER = os.getenv("STREAMLIT_EMAIL_USER")
     EMAIL_PASS = os.getenv("STREAMLIT_EMAIL_PASS")
@@ -189,11 +192,11 @@ def send_email(recipient, visitor, visit_date, pdf_path):
         f"Regards,\n{visitor}"
     )
 
-    # Attach the PDF
+    # Attach the PDF file
     with open(pdf_path, "rb") as f:
-        data = f.read()
+        pdf_data = f.read()
     msg.add_attachment(
-        data,
+        pdf_data,
         maintype="application",
         subtype="pdf",
         filename=f"site_visit_{visitor}_{visit_date}.pdf"
@@ -206,18 +209,17 @@ def send_email(recipient, visitor, visit_date, pdf_path):
         server.login(EMAIL_USER, EMAIL_PASS)
         server.send_message(msg)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 5) Streamlit UI
 # ─────────────────────────────────────────────────────────────────────────────
 st.title("Site Visit Report 📝")
 
-# — Show current time and temperature at top of form —
-st.markdown(f"**Current Time:** {current_time_str}")
+# — Display current time & Albuquerque temperature at top —
+st.markdown(f"**Current Time (MT):** {current_time_str}")
 if temperature_f is not None:
-    st.markdown(f"**Current Temperature (°F):** {temperature_f}")
+    st.markdown(f"**Albuquerque Temp (°F):** {temperature_f}")
 else:
-    st.markdown("**Current Temperature (°F):** Could not fetch")
+    st.markdown("**Albuquerque Temp (°F):** Could not fetch")
 
 st.write("---")
 
@@ -225,14 +227,13 @@ st.write("---")
 visitor_name = st.text_input("Your Name", max_chars=50)
 visit_date = st.date_input("Date of Visit", value=date.today())
 
-# — Manual Site Address field —
+# — Manual Site Address field (free-text) —
 address = st.text_input("Site Address / Location", "")
 
 summary = st.text_area("Brief Summary", help="Describe what you saw/did on site", height=120)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 6) Survey Questions (all 9)
+# 6) Survey Questions (9 total)
 # ─────────────────────────────────────────────────────────────────────────────
 survey_responses = {}
 
@@ -299,9 +300,8 @@ if choice9 in ("No", "Yes"):
     desc9 = st.text_input("Description (accidents)", "")
 survey_responses["Any accidents on site today?"] = (choice9, desc9)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 7) File uploaders (two separate uploaders, each up to 4 images → total 8)
+# 7) File uploaders (2 separate uploaders, each up to 4 images → total 8)
 # ─────────────────────────────────────────────────────────────────────────────
 st.write("---")
 
@@ -327,12 +327,10 @@ if len(uploaded_batch2) > 4:
 
 all_images = uploaded_batch1 + uploaded_batch2
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 8) Email field
+# 8) Email field (recipient)
 # ─────────────────────────────────────────────────────────────────────────────
 recipient_email = st.text_input("Email To Send Report To", max_chars=100)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 9) Generate & Email button
@@ -344,7 +342,7 @@ if st.button("Generate & Email Report"):
         # 1) Prepare image byte streams
         image_bytes_list = [img for img in all_images]
 
-        # 2) Generate the PDF (including address, time, temp, survey, and up to 8 images)
+        # 2) Generate the PDF (containing address, time, ABQ temp, survey, summary, and images)
         pdf_path = generate_pdf(
             visitor_name,
             visit_date.strftime("%Y-%m-%d"),
@@ -356,7 +354,7 @@ if st.button("Generate & Email Report"):
             image_bytes_list
         )
 
-        # 3) Send email
+        # 3) Send the email with PDF attached
         try:
             send_email(
                 recipient_email,
@@ -368,7 +366,7 @@ if st.button("Generate & Email Report"):
         except Exception as e:
             st.error(f"Failed to send email: {e}")
 
-        # 4) Clean up the temporary PDF file
+        # 4) Cleanup temporary PDF
         try:
             os.unlink(pdf_path)
         except:
