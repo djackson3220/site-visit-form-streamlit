@@ -15,18 +15,18 @@ from reportlab.lib.utils import ImageReader
 st.set_page_config(page_title="Site Visit Report", layout="centered")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) Helper: generate PDF with embedded images and full survey
+# 2) Helper: generate PDF with embedded images, survey, and manual address
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
+def generate_pdf(visitor, visit_date, address, summary, survey_responses, image_files):
     """
     - visitor: str
     - visit_date: str (YYYY-MM-DD)
+    - address: str (manually entered)
     - summary: str (multi‐line)
     - survey_responses: dict where each key is a question string, and each value is a tuple:
          (choice_str, description_str)
     - image_files: list of in‐memory file‐like objects for images (up to 8)
     """
-    # Create a temporary file for the PDF
     tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     c = canvas.Canvas(tmp_pdf.name, pagesize=letter)
     width, height = letter
@@ -35,38 +35,39 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, height - 50, "Site Visit Report")
 
-    # ─── Visitor Info ─────────────────────────────────────────────────────────
+    # ─── Visitor Info + Address ───────────────────────────────────────────────
     c.setFont("Helvetica", 12)
     c.drawString(50, height - 80, f"Visitor: {visitor}")
     c.drawString(300, height - 80, f"Date: {visit_date}")
+    if address.strip():
+        c.setFont("Helvetica", 12)
+        c.drawString(50, height - 100, f"Site Address: {address}")
+        y = height - 120
+    else:
+        y = height - 100
 
     # ─── Survey Section ───────────────────────────────────────────────────────
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, height - 110, "Survey:")
-    y = height - 130
+    c.drawString(50, y, "Survey:")
+    y -= 20
     c.setFont("Helvetica", 12)
-
     for question, (choice, desc) in survey_responses.items():
-        # Draw the question and the choice
         c.drawString(60, y, f"- {question} [{choice}]")
         y -= 18
-        # If there is a non‐empty description, draw it in smaller text
         if desc.strip() != "":
             c.setFont("Helvetica-Oblique", 10)
             c.drawString(72, y, f"• {desc}")
             c.setFont("Helvetica", 12)
             y -= 14
-        # Check if we’re too low on the page and need a new page
         if y < 120:
             c.showPage()
             y = height - 50
             c.setFont("Helvetica-Bold", 14)
             c.drawString(50, y, "Survey (cont’d):")
-            c.setFont("Helvetica", 12)
             y -= 20
+            c.setFont("Helvetica", 12)
 
     # ─── Brief Summary ─────────────────────────────────────────────────────────
-    # Leave some space below survey
     if y < 200:
         c.showPage()
         y = height - 50
@@ -75,7 +76,6 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
     c.drawString(50, y, "Brief Summary:")
     y -= 20
     c.setFont("Helvetica", 12)
-
     for line in summary.split("\n"):
         c.drawString(60, y, line)
         y -= 16
@@ -85,8 +85,6 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
             c.setFont("Helvetica", 12)
 
     # ─── Images ────────────────────────────────────────────────────────────────
-    # Place each image at most 2 per row, scaled to max width=200 (maintaining aspect)
-    # Start below summary if space; else new page
     if y < 300:
         c.showPage()
         y = height - 50
@@ -103,7 +101,6 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
             img_w = img_max_w
             img_h = img_max_w * aspect
 
-            # If no room vertically, make new page
             if y - img_h < 50:
                 c.showPage()
                 y = height - 50
@@ -112,31 +109,28 @@ def generate_pdf(visitor, visit_date, summary, survey_responses, image_files):
 
             c.drawImage(img, x_offset, y - img_h, width=img_w, height=img_h)
 
-            # Move right for next image
             if count % 2 == 0:
                 x_offset += img_max_w + gap
             else:
-                # Two images placed → move down to new row
                 x_offset = 50
                 y -= img_h + gap
 
             count += 1
 
         except Exception:
-            # Skip invalid images
             continue
 
     c.showPage()
     c.save()
-    return tmp_pdf.name  # Path to the generated PDF file
+    return tmp_pdf.name
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3) Helper: send email with attachment (Office365 SMTP)
 # ─────────────────────────────────────────────────────────────────────────────
-def send_email(recipient, visitor, visit_date, pdf_path, video_paths=None):
+def send_email(recipient, visitor, visit_date, pdf_path):
     """
-    Emails the PDF at pdf_path to the recipient. (video_paths is unused since we no longer attach videos.)
+    Emails the PDF at pdf_path to the recipient.
     """
     EMAIL_USER = os.getenv("STREAMLIT_EMAIL_USER")
     EMAIL_PASS = os.getenv("STREAMLIT_EMAIL_PASS")
@@ -151,7 +145,6 @@ def send_email(recipient, visitor, visit_date, pdf_path, video_paths=None):
         f"Regards,\n{visitor}"
     )
 
-    # Attach the PDF
     with open(pdf_path, "rb") as f:
         data = f.read()
     msg.add_attachment(
@@ -161,7 +154,6 @@ def send_email(recipient, visitor, visit_date, pdf_path, video_paths=None):
         filename=f"site_visit_{visitor}_{visit_date}.pdf"
     )
 
-    # Send via SMTP (Office365)
     with smtplib.SMTP("smtp.office365.com", 587) as server:
         server.ehlo()
         server.starttls()
@@ -178,15 +170,16 @@ st.title("Site Visit Report 📝")
 # — Basic fields —
 visitor_name = st.text_input("Your Name", max_chars=50)
 visit_date = st.date_input("Date of Visit", value=date.today())
+
+# ─── NEW: Manual Site Address field ─────────────────────────────────────────
+address = st.text_input("Site Address / Location", "")
+
 summary = st.text_area("Brief Summary", help="Describe what you saw/did on site", height=120)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Survey Questions (all 9)
 # ─────────────────────────────────────────────────────────────────────────────
-# For each question, we use a three‐option radio: ["N/A", "No", "Yes"].
-# If the user selects "No" or "Yes", a description box appears.
-
 survey_responses = {}
 
 # 1. Did weather cause any delays?
@@ -278,7 +271,6 @@ if len(uploaded_batch2) > 4:
     st.warning("Batch 2: Please upload at most 4 images.")
     uploaded_batch2 = uploaded_batch2[:4]
 
-# Combine the two batches into a single list of up to 8 images
 all_images = uploaded_batch1 + uploaded_batch2
 
 
@@ -291,30 +283,29 @@ recipient_email = st.text_input("Email To Send Report To", max_chars=100)
 # 7) Generate & Email button
 # ─────────────────────────────────────────────────────────────────────────────
 if st.button("Generate & Email Report"):
-    # Basic validation
     if not visitor_name or not summary or not recipient_email:
         st.error("Please fill in all required fields: name, summary, and recipient email.")
     else:
         # 1) Prepare image byte streams
         image_bytes_list = [img for img in all_images]
 
-        # 2) Generate the PDF (with survey responses and up to 8 images)
+        # 2) Generate the PDF (including manual address, survey, and up to 8 images)
         pdf_path = generate_pdf(
             visitor_name,
             visit_date.strftime("%Y-%m-%d"),
+            address,
             summary,
             survey_responses,
             image_bytes_list
         )
 
-        # 3) Send email (no videos to attach)
+        # 3) Send email
         try:
             send_email(
                 recipient_email,
                 visitor_name,
                 visit_date.strftime("%Y-%m-%d"),
-                pdf_path,
-                video_paths=None  # no videos in this version
+                pdf_path
             )
             st.success(f"Email sent to {recipient_email}!")
         except Exception as e:
@@ -325,5 +316,3 @@ if st.button("Generate & Email Report"):
             os.unlink(pdf_path)
         except:
             pass
-
-        # (No video temp files to clean up since we removed videos)
