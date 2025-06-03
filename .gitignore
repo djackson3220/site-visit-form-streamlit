@@ -1,0 +1,16 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit local data
+/.streamlit/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+tmp*
+
