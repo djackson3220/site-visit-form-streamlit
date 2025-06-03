@@ -1,0 +1,2 @@
+streamlit>=1.0
+reportlab>=3.6
