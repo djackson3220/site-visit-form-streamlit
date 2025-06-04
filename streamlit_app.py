@@ -5,27 +5,33 @@ from zoneinfo import ZoneInfo
 
 import requests
 import streamlit as st
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 1) Page configuration
+# 1) Page Configuration & Custom Fonts
 # ────────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Site Visit Report", layout="centered")
 
+# Register “Helvetica-Bold” and “Helvetica” (ReportLab generally already includes these,
+# but if you want a custom TrueType font you can register it similarly):
+pdfmetrics.registerFont(TTFont("Helvetica", "Helvetica.ttf"))
+pdfmetrics.registerFont(TTFont("Helvetica-Bold", "Helvetica-Bold.ttf"))
+
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 2) Function to fetch current temperature for Albuquerque, NM (via Open‐Meteo)
+# 2) Utility: Fetch Current Temperature in Albuquerque, NM (Open-Meteo API)
 # ────────────────────────────────────────────────────────────────────────────────
 
 def get_current_temperature_abq() -> str:
     """
-    Uses the Open‐Meteo free API to fetch the current temperature (°F)
-    in Albuquerque, NM (latitude 35.0844, longitude -106.6504), in the
-    America/Denver timezone. Returns a one‐decimal string (e.g. "75.2")
-    or "N/A" on error.
+    Fetches the current temperature (°F) at Albuquerque, NM (35.0844, -106.6504)
+    from Open-Meteo’s free API.  Returns a string like '74.2' or 'N/A' on failure.
     """
     try:
         url = "https://api.open-meteo.com/v1/forecast"
@@ -34,110 +40,136 @@ def get_current_temperature_abq() -> str:
             "longitude": -106.6504,
             "current_weather": True,
             "temperature_unit": "fahrenheit",
-            "timezone": "America/Denver"
+            "timezone": "America/Denver",
         }
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
-        if (
-            resp.status_code == 200 
-            and "current_weather" in data 
-            and "temperature" in data["current_weather"]
-        ):
+        if resp.status_code == 200 and "current_weather" in data:
             temp_f = data["current_weather"]["temperature"]
             return f"{temp_f:.1f}"
-        return "N/A"
+        else:
+            return "N/A"
     except Exception:
         return "N/A"
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 3) Function to generate PDF
+# 3) PDF Generation Function (with Enhanced Layout)
 # ────────────────────────────────────────────────────────────────────────────────
 
 def generate_pdf(
-    visitor: str,
-    visit_date: str,
+    project_title: str,
     site_address: str,
+    job_number: str,
+    prepared_by: str,
     summary: str,
     survey_responses: dict,
     image_files_batch1,
     image_files_batch2,
-) -> bytes:
+):
     """
-    Creates a PDF containing:
-      • Current Albuquerque time and temperature (°F)
-      • Visitor info, site_address, summary
-      • Survey answers + comments
-      • Up to 8 images (two batches of 4)
-    Returns the PDF as raw bytes.
+    Creates a professional PDF using ReportLab.  Layout:
+     • Blue top banner with project_title (white, large) and site_address (white, smaller)
+     • Black sub-banner with Date, Job #, Prepared By
+     • “Weather” section in a light-blue rectangle
+     • “Brief Summary” text block
+     • “Survey” section as a table: question / chosen answer / comment box
+     • Up to 8 images (two batches of 4)
     """
-    # 3.a) Get ABQ time and temperature
+
+    # 3.a) Fetch current ABQ time & temperature
     abq_tz = ZoneInfo("America/Denver")
-    now_abq = datetime.now(abq_tz).strftime("%Y-%m-%d %H:%M:%S")
+    now_abq = datetime.now(abq_tz)
+    now_abq_str = now_abq.strftime("%a %m/%d/%Y  %I:%M %p")
     temp_str = get_current_temperature_abq()
 
-    # 3.b) Create a temporary PDF
+    # 3.b) Prepare a temporary file
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    tmp_pdf_path = tmp.name
+    tmp_path = tmp.name
     tmp.close()
 
-    c = canvas.Canvas(tmp_pdf_path, pagesize=letter)
+    # 3.c) Create the canvas
+    c = canvas.Canvas(tmp_path, pagesize=letter)
     width, height = letter
 
-    # Header
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(200, height - 50, "Site Visit Report")
+    # ─── Top Blue Banner ───────────────────────────────────────────────────────────
+    banner_height = 80
+    c.setFillColorRGB(0.12, 0.68, 0.80)  # a light-blue
+    c.rect(0, height - banner_height, width, banner_height, fill=1, stroke=0)
 
-    # Timestamp & temperature
-    c.setFont("Helvetica", 10)
-    c.drawString(50, height - 80, f"Generated At (ABQ): {now_abq}")
-    c.drawString(50, height - 95, f"Temperature (°F): {temp_str}")
+    # Project Title (white, bold, large)
+    c.setFont("Helvetica-Bold", 24)
+    c.setFillColor(colors.white)
+    c.drawString(40, height - 45, project_title[:60])  # truncated if too long
 
-    # Divider line
-    c.line(50, height - 105, width - 50, height - 105)
-
-    # Visitor info
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, height - 125, "Visitor Name    :")
+    # Site Address (white, normal, smaller)
     c.setFont("Helvetica", 12)
-    c.drawString(200, height - 125, visitor)
+    c.drawString(40, height - 65, site_address[:70])
 
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, height - 145, "Date of Visit   :")
-    c.setFont("Helvetica", 12)
-    c.drawString(200, height - 145, visit_date)
+    # ─── Black Sub-Banner (Date / Job # / Prepared By) ──────────────────────────────
+    sub_banner_height = 30
+    c.setFillColorRGB(0, 0, 0)  # black
+    c.rect(0, height - banner_height - sub_banner_height, width, sub_banner_height, fill=1, stroke=0)
 
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, height - 165, "Site Address    :")
-    c.setFont("Helvetica", 12)
-    c.drawString(200, height - 165, site_address)
+    # Text inside black bar (in white)
+    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(colors.white)
+    # Date on left
+    c.drawString(40, height - banner_height - 20, f"Date: {now_abq_str}")
+    # Job # centered
+    c.drawCentredString(width / 2, height - banner_height - 20, f"Job #: {job_number}")
+    # Prepared By on right
+    c.drawRightString(width - 40, height - banner_height - 20, f"Prepared By: {prepared_by}")
 
-    # Divider line
-    c.line(50, height - 175, width - 50, height - 175)
+    # ─── “Weather” Section (light-blue header + details) ─────────────────────────────
+    weather_top = height - banner_height - sub_banner_height - 40
+    weather_header_height = 25
+    c.setFillColorRGB(0.12, 0.68, 0.80)
+    c.rect(0, weather_top, width, weather_header_height, fill=1, stroke=0)
 
-    # Brief summary
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, height - 195, "Brief Summary:")
-    text_obj = c.beginText(50, height - 215)
-    text_obj.setFont("Helvetica", 11)
-    for line in summary.split("\n"):
-        text_obj.textLine(line)
-    c.drawText(text_obj)
+    # “Weather” text
+    c.setFont("Helvetica-Bold", 14)
+    c.setFillColor(colors.white)
+    c.drawString(40, weather_top + 7, "Weather (Albuquerque, NM)")
 
-    # Calculate where to start survey based on summary length
-    summary_lines = summary.count("\n") + 1
-    survey_y_start = height - 215 - (summary_lines * 12) - 20
-    if survey_y_start < 200:
-        c.showPage()
-        survey_y_start = height - 100
-
-    # Survey responses
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, survey_y_start, "Survey Responses:")
+    # Weather details below header
     c.setFont("Helvetica", 11)
-    y = survey_y_start - 20
-    line_height = 14
+    c.setFillColor(colors.black)
+    weather_label_y = weather_top - 20
+    c.drawString(40, weather_label_y, f"Current Time (ABQ): {now_abq_str}")
+    c.drawString(300, weather_label_y, f"Temperature (°F): {temp_str}")
 
+    # ─── “Brief Summary” Section ────────────────────────────────────────────────────
+    summary_top = weather_label_y - 30
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(40, summary_top, "Brief Summary:")
+
+    text_object = c.beginText(40, summary_top - 18)
+    text_object.setFont("Helvetica", 11)
+    for line in summary.split("\n"):
+        text_object.textLine(line)
+    c.drawText(text_object)
+
+    # Calculate Y after summary text
+    summary_lines = summary.count("\n") + 1
+    y_after_summary = summary_top - 18 - (summary_lines * 14) - 20
+    if y_after_summary < 200:
+        c.showPage()
+        y_after_summary = height - 100
+
+    # ─── “Survey” Section ───────────────────────────────────────────────────────────
+    survey_header_y = y_after_summary
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(40, survey_header_y, "Survey Responses:")
+
+    # Table column widths (point units)
+    col1_x = 40
+    col2_x = 300
+    col3_x = 370
+    line_height = 16
+    y = survey_header_y - 20
+
+    # Draw each question, selected answer, and comment
     survey_questions = {
         "Q1": "1) Did weather cause any delays?",
         "Q2": "2) Any instruction Contractor and Contractor’s actions?",
@@ -150,46 +182,52 @@ def generate_pdf(
         "Q9": "9) Any accidents on site today?",
     }
 
-    for key, question in survey_questions.items():
-        choice, comment_text = survey_responses.get(key, ("N/A", ""))
-        # Print question + answer
-        c.drawString(60, y, f"{question}   ▶ {choice}")
-        y -= line_height
-
-        # If comment exists, print on next line (indented)
-        if comment_text.strip():
+    for key, question_text in survey_questions.items():
+        answer, comment = survey_responses.get(key, ("N/A", ""))
+        # Draw question text (col1)
+        c.setFont("Helvetica", 11)
+        c.setFillColor(colors.black)
+        c.drawString(col1_x, y, question_text)
+        # Draw the chosen answer (col2)
+        c.drawString(col2_x, y, f"▶  {answer}")
+        # Draw the comment box (col3), if any
+        if comment.strip():
             c.setFont("Helvetica-Oblique", 10)
-            c.drawString(80, y, f"Comment: {comment_text}")
-            c.setFont("Helvetica", 11)
-            y -= line_height
+            c.setFillColor(colors.darkgray)
+            c.drawString(col3_x, y, f"Comment: {comment}")
 
-        if y < 100:
+        y -= line_height
+        if y < 150:
             c.showPage()
-            y = height - 100
-            c.setFont("Helvetica", 11)
+            y = height - 80
 
-    # Divider before photos (if needed)
+    # ─── “Site Photos” Section ───────────────────────────────────────────────────────
     if y < 200:
         c.showPage()
-        y = height - 100
+        y = height - 80
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Site Photos:")
+    c.setFillColor(colors.black)
+    c.drawString(40, y, "Site Photos:")
     y -= 20
 
-    # Function to place up to 4 images per row, scaled to width=200
-    def draw_images(start_x, start_y, files):
+    def draw_images_batch(start_x, start_y, files):
+        """
+        Helper to place up to 4 images side-by-side (scaled to width=150 pts).
+        Returns the next available Y position.
+        """
         x = start_x
         max_h = 0
         for uploaded in files or []:
             try:
                 img = ImageReader(uploaded)
                 iw, ih = img.getSize()
-                scale = 200.0 / float(iw)
-                scaled_w = 200
+                scale = 150.0 / float(iw)
+                scaled_w = 150
                 scaled_h = ih * scale
 
-                if x + scaled_w > width - 50:
+                # If exceeding right margin, wrap to next line
+                if x + scaled_w > width - 40:
                     x = start_x
                     start_y -= (max_h + 20)
                     max_h = 0
@@ -202,37 +240,59 @@ def generate_pdf(
 
         return start_y - max_h - 20
 
-    y = draw_images(50, y, image_files_batch1)
+    y = draw_images_batch(40, y, image_files_batch1)
     if image_files_batch2:
-        if y < 100:
+        if y < 80:
             c.showPage()
-            y = height - 100
-        y = draw_images(50, y, image_files_batch2)
+            y = height - 80
+        y = draw_images_batch(40, y, image_files_batch2)
 
+    # Finish up
     c.save()
-    with open(tmp_pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-    os.remove(tmp_pdf_path)
-    return pdf_bytes
+    with open(tmp_path, "rb") as f:
+        data = f.read()
+    os.remove(tmp_path)
+    return data
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 4) Streamlit App Layout
+# 4) Streamlit App Interface
 # ────────────────────────────────────────────────────────────────────────────────
 
 st.title("Site Visit Report 📋")
 
-# 4.a) Visitor info + summary
-visitor_name = st.text_input("Your Name", max_chars=50)
-visit_date   = st.date_input("Date of Visit", value=datetime.today())
-site_address = st.text_input("Site Address / Location", max_chars=100)
-summary      = st.text_area(
-    "Brief Summary", help="Describe what you saw/did on site (use Enter for new lines)", height=120
+# 4.a) Project Title & Info Inputs
+project_title = st.text_input(
+    "Project Title",
+    value="REUSE PIPELINE EXTENSION TO WINROCK",
+    help="E.g. REUSE PIPELINE EXTENSION TO WINROCK",
+)
+site_address = st.text_input(
+    "Site Address / Location",
+    value="Constitution Ave NE, Albuquerque, NM 87110",
+)
+job_number = st.text_input(
+    "Job #",
+    value="2302.012",
+    help="Your internal Job Number or Project ID",
+)
+prepared_by = st.text_input(
+    "Prepared By",
+    value="Arlee Engineer",
+    help="Name of person preparing this report",
 )
 
-# 4.b) Survey with comment boxes
+# 4.b) Brief Summary
 st.markdown("---")
-st.header("Survey")
+st.subheader("Brief Summary")
+summary = st.text_area(
+    "Describe what you saw/did on site (use Enter for new lines)",
+    height=120,
+)
+
+# 4.c) Survey Section
+st.markdown("---")
+st.subheader("Survey")
 
 survey_questions = [
     "1) Did weather cause any delays?",
@@ -247,16 +307,15 @@ survey_questions = [
 ]
 
 survey_answers = {}
-for idx, question in enumerate(survey_questions, start=1):
-    q_key    = f"Q{idx}"
-    comm_key = f"Q{idx}_comment"
+for idx, qtext in enumerate(survey_questions, start=1):
+    q_key = f"Q{idx}"
+    comm_key = f"{q_key}_comment"
 
-    # Three columns: question text | radio buttons | comment box
-    col_txt, col_rad, col_comm = st.columns([4, 2, 6])
-
-    with col_txt:
-        st.write(f"**{question}**")
-    with col_rad:
+    # layout with 3 columns: Question / Radio / Comment
+    col1, col2, col3 = st.columns([4, 2, 6])
+    with col1:
+        st.write(f"**{qtext}**")
+    with col2:
         choice = st.radio(
             label="",
             options=("N/A", "No", "Yes"),
@@ -264,18 +323,17 @@ for idx, question in enumerate(survey_questions, start=1):
             key=q_key,
             horizontal=True,
         )
-    with col_comm:
+    with col3:
         comment = st.text_input(
             label="",
             placeholder="Optional comment…",
             key=comm_key,
         )
-
     survey_answers[q_key] = (choice, comment)
 
-# 4.c) Photo upload (two batches of up to 4 each)
+# 4.d) Image Upload (two batches, up to 4 each)
 st.markdown("---")
-st.header("Site Photos")
+st.subheader("Site Photos")
 
 image_files_batch1 = st.file_uploader(
     "Upload images (batch 1 of 2, up to 4 pics)",
@@ -297,45 +355,49 @@ if image_files_batch2 and len(image_files_batch2) > 4:
     st.warning("Please only upload up to 4 images in batch 2.")
     image_files_batch2 = image_files_batch2[:4]
 
-# 4.d) Show live ABQ time + temperature on the form
-abq_tz  = ZoneInfo("America/Denver")
-now_abq = datetime.now(abq_tz).strftime("%Y-%m-%d %H:%M:%S")
-st.write(f"**Current Time (ABQ):** {now_abq}")
-
-temp_live = get_current_temperature_abq()
-if temp_live != "N/A":
-    st.write(f"**Current Temperature (°F):** {temp_live}")
+# 4.e) Show live ABQ time + temperature
+st.markdown("---")
+abq_tz = ZoneInfo("America/Denver")
+now_abq_display = datetime.now(abq_tz).strftime("%Y-%m-%d %H:%M:%S")
+temp_display = get_current_temperature_abq()
+st.write(f"**Current Time (ABQ):** {now_abq_display}")
+if temp_display != "N/A":
+    st.write(f"**Current Temperature (°F):** {temp_display}")
 else:
-    st.info("Unable to fetch temperature for ABQ. It will show as “N/A” in PDF.")
+    st.info("Unable to fetch temperature for ABQ. It will show as “N/A” in the PDF.")
 
-# 4.e) Generate & download PDF
+# 4.f) Generate & Download Button
 st.markdown("---")
 if st.button("Generate PDF"):
-    # Must have name, address, summary
-    missing = []
-    if not visitor_name.strip():
-        missing.append("• Visitor Name is required.")
+    missing_fields = []
+    if not project_title.strip():
+        missing_fields.append("• Project Title")
     if not site_address.strip():
-        missing.append("• Site Address is required.")
+        missing_fields.append("• Site Address")
+    if not job_number.strip():
+        missing_fields.append("• Job #")
+    if not prepared_by.strip():
+        missing_fields.append("• Prepared By")
     if not summary.strip():
-        missing.append("• Brief Summary is required.")
+        missing_fields.append("• Brief Summary")
 
-    if missing:
-        st.error("Please fill in:\n" + "\n".join(missing))
+    if missing_fields:
+        st.error("Please fill in the following:\n" + "\n".join(missing_fields))
     else:
         try:
             with st.spinner("Creating PDF…"):
                 pdf_bytes = generate_pdf(
-                    visitor=visitor_name,
-                    visit_date=visit_date.strftime("%Y/%m/%d"),
+                    project_title=project_title,
                     site_address=site_address,
+                    job_number=job_number,
+                    prepared_by=prepared_by,
                     summary=summary,
                     survey_responses=survey_answers,
                     image_files_batch1=image_files_batch1,
                     image_files_batch2=image_files_batch2,
                 )
         except Exception as e:
-            st.error(f"🚨 Error generating PDF:\n\n{e}")
+            st.error(f"🚨 Error generating PDF:\n{e}")
         else:
             timestamp = datetime.now(abq_tz).strftime("%Y%m%d_%H%M%S")
             filename = f"site_visit_report_{timestamp}.pdf"
