@@ -3,6 +3,7 @@ import tempfile
 import requests
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
+import textwrap
 
 import streamlit as st
 from reportlab.lib import colors
@@ -52,7 +53,7 @@ else:
     temp_display = f"{round(current_temp)}°F"
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 3) PDF GENERATION FUNCTION
+# 3) PDF GENERATION FUNCTION (with automatic wrapping)
 # ────────────────────────────────────────────────────────────────────────────────
 
 def generate_pdf(
@@ -72,8 +73,8 @@ def generate_pdf(
       • Top light-blue banner: project_title (white, large) / site_address (white, smaller)
       • Thin darker-blue stripe just below: "Current Time: … | Current Temp: …"
       • Black sub-banner: "Date of Visit: <visit_date>" on the left, "Prepared By: <prepared_by>" on the right
-      • "Brief Summary" text block
-      • "Survey Responses" table (question / chosen answer / optional comment)
+      • "Brief Summary" text block (wraps long lines automatically)
+      • "Survey Responses" table (question / chosen answer / wrapped comment)
       • Up to 8 images (two batches of up to 4 each), each scaled to 150 pt width
     """
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
@@ -122,26 +123,35 @@ def generate_pdf(
     # Prepared By on right
     c.drawRightString(width - 40, y_black + 8, f"Prepared By: {prepared_by}")
 
-    # ─── Brief Summary Section ────────────────────────────────────────────────────
+    # ─── Brief Summary Section (wrapped) ──────────────────────────────────────────
     summary_top = y_black - 30
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(colors.black)
     c.drawString(40, summary_top, "Brief Summary:")
 
-    text_object = c.beginText(40, summary_top - 18)
-    text_object.setFont("Helvetica", 11)
-    for line in summary.split("\n"):
-        text_object.textLine(line)
-    c.drawText(text_object)
+    # Wrap each line of the summary so it doesn’t exceed roughly 80 chars
+    wrapper = textwrap.TextWrapper(width=80)
+    wrapped_lines = []
+    for paragraph in summary.split("\n"):
+        wrapped_lines.extend(wrapper.wrap(paragraph))
+        # preserve blank lines
+        if paragraph.strip() == "":
+            wrapped_lines.append("")
 
-    # Calculate Y after summary
-    summary_lines = summary.count("\n") + 1
-    y_after_summary = summary_top - 18 - (summary_lines * 14) - 20
+    text_obj = c.beginText(40, summary_top - 18)
+    text_obj.setFont("Helvetica", 11)
+    for wrapped_line in wrapped_lines:
+        text_obj.textLine(wrapped_line)
+    c.drawText(text_obj)
+
+    # Calculate Y position after summary
+    summary_line_count = len(wrapped_lines)
+    y_after_summary = summary_top - 18 - (summary_line_count * 14) - 20
     if y_after_summary < 200:
         c.showPage()
         y_after_summary = height - 80
 
-    # ─── Survey Section ──────────────────────────────────────────────────────────
+    # ─── Survey Section (with wrapped comments) ──────────────────────────────────
     survey_header_y = y_after_summary
     c.setFont("Helvetica-Bold", 12)
     c.drawString(40, survey_header_y, "Survey Responses:")
@@ -149,7 +159,7 @@ def generate_pdf(
     col1_x = 40
     col2_x = 300
     col3_x = 370
-    line_height = 16
+    line_height = 18  # slightly larger for wrapped comment lines
     y = survey_header_y - 20
 
     survey_questions = {
@@ -166,18 +176,37 @@ def generate_pdf(
 
     for key, question_text in survey_questions.items():
         answer, comment = survey_responses.get(key, ("N/A", ""))
+
+        # Draw the question and answer on one line
         c.setFont("Helvetica", 11)
         c.setFillColor(colors.black)
         c.drawString(col1_x, y, question_text)
+        c.drawString(col2_x, y, f"■ {answer}")
 
-        c.drawString(col2_x, y, f"▶ {answer}")
-
+        # If there is a comment, wrap it at ~40 characters
         if comment.strip():
+            wrapper_c = textwrap.TextWrapper(width=40)
+            wrapped_comment_lines = wrapper_c.wrap(comment)
+
+            # Draw "Comment:" label on the first wrapped line
             c.setFont("Helvetica-Oblique", 10)
             c.setFillColor(colors.darkgray)
-            c.drawString(col3_x, y, f"Comment: {comment}")
+            first_line = wrapped_comment_lines[0]
+            c.drawString(col3_x, y, f"Comment: {first_line}")
 
-        y -= line_height
+            # Draw any additional wrapped lines beneath (indented a bit)
+            extra_y = y - line_height
+            for cline in wrapped_comment_lines[1:]:
+                c.drawString(col3_x + 10, extra_y, cline)
+                extra_y -= line_height
+
+            # Move y down by the total wrapped lines' count
+            y -= line_height * len(wrapped_comment_lines)
+        else:
+            # No comment: just move down by a single line
+            y -= line_height
+
+        # If we run out of vertical space, start a new page
         if y < 150:
             c.showPage()
             y = height - 80
@@ -220,10 +249,10 @@ def generate_pdf(
 
         return start_y - max_h - 20
 
-    # Draw first batch
+    # Draw first batch of images
     y = draw_images_batch(40, y, image_files_batch1)
 
-    # Draw second batch if present
+    # Draw second batch of images if present
     if image_files_batch2:
         if y < 80:
             c.showPage()
@@ -279,7 +308,7 @@ st.markdown("---")
 st.subheader("Brief Summary")
 summary = st.text_area(
     "Describe what you saw/did on site (use Enter for line breaks)",
-    height=200,  # kept at 200 so you have plenty of room
+    height=200,  # plenty of vertical space here
 )
 
 # 4.d) Survey
@@ -315,12 +344,11 @@ for idx, qtext in enumerate(survey_questions, start=1):
             horizontal=True,
         )
     with col3:
-        # Switched comment field from text_input to text_area, height≥68
         comment = st.text_area(
             label="",
             placeholder="Optional comment…",
             key=comm_key,
-            height=80,  # now ≥68 (80 is fine)
+            height=80,  # must be ≥ 68
         )
     survey_answers[q_key] = (choice, comment)
 
