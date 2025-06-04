@@ -256,12 +256,12 @@ st.markdown(
 # 4.b) Project Title, Site Address/Location, Date of Visit, Prepared By
 project_title = st.text_input(
     "Project Title",
-    value="REUSE PIPELINE EXTENSION TO WINROCK",
+    value="",
     help="E.g. REUSE PIPELINE EXTENSION TO WINROCK",
 )
 site_address = st.text_input(
     "Site Address / Location",
-    value="Constitution Ave NE, Albuquerque, NM 87110",
+    value="Albuquerque, NM ",
 )
 visit_date = st.date_input(
     "Date of Visit",
@@ -270,7 +270,7 @@ visit_date = st.date_input(
 )
 prepared_by = st.text_input(
     "Prepared By",
-    value="Arlee Engineer",
+    value="",
     help="Name of person preparing this report",
 )
 
