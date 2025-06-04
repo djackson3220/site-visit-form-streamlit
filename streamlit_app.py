@@ -279,7 +279,7 @@ st.markdown("---")
 st.subheader("Brief Summary")
 summary = st.text_area(
     "Describe what you saw/did on site (use Enter for line breaks)",
-    height=200,  # increased height to allow more typing
+    height=200,  # kept at 200 so you have plenty of room
 )
 
 # 4.d) Survey
@@ -315,12 +315,12 @@ for idx, qtext in enumerate(survey_questions, start=1):
             horizontal=True,
         )
     with col3:
-        # Changed from text_input to text_area with a bit more height
+        # Switched comment field from text_input to text_area, height≥68
         comment = st.text_area(
             label="",
             placeholder="Optional comment…",
             key=comm_key,
-            height=50,  # extra height for longer comment
+            height=80,  # now ≥68 (80 is fine)
         )
     survey_answers[q_key] = (choice, comment)
 
