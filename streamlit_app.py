@@ -2,6 +2,7 @@ import os
 import tempfile
 import requests
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 from reportlab.lib import colors
@@ -40,8 +41,8 @@ def fetch_current_temperature(lat: float, lon: float) -> float | None:
     except Exception:
         return None
 
-# Get current local time (server time ≈ ABQ time for our purposes)
-current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Get current Albuquerque time (Mountain Time)
+current_time = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d %H:%M:%S")
 
 # Attempt to fetch the current temperature (°F)
 current_temp = fetch_current_temperature(LATITUDE, LONGITUDE)
