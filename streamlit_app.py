@@ -7,21 +7,14 @@ import requests
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 1) Page Configuration & Custom Fonts
+# 1) Page Configuration
 # ────────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Site Visit Report", layout="centered")
-
-# Register “Helvetica-Bold” and “Helvetica” (ReportLab generally already includes these,
-# but if you want a custom TrueType font you can register it similarly):
-pdfmetrics.registerFont(TTFont("Helvetica", "Helvetica.ttf"))
-pdfmetrics.registerFont(TTFont("Helvetica-Bold", "Helvetica-Bold.ttf"))
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -31,7 +24,7 @@ pdfmetrics.registerFont(TTFont("Helvetica-Bold", "Helvetica-Bold.ttf"))
 def get_current_temperature_abq() -> str:
     """
     Fetches the current temperature (°F) at Albuquerque, NM (35.0844, -106.6504)
-    from Open-Meteo’s free API.  Returns a string like '74.2' or 'N/A' on failure.
+    using Open-Meteo’s public API. Returns a string like '74.2' or 'N/A' on failure.
     """
     try:
         url = "https://api.open-meteo.com/v1/forecast"
@@ -54,7 +47,7 @@ def get_current_temperature_abq() -> str:
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 3) PDF Generation Function (with Enhanced Layout)
+# 3) PDF Generation Function (Professional Layout)
 # ────────────────────────────────────────────────────────────────────────────────
 
 def generate_pdf(
@@ -73,7 +66,7 @@ def generate_pdf(
      • Black sub-banner with Date, Job #, Prepared By
      • “Weather” section in a light-blue rectangle
      • “Brief Summary” text block
-     • “Survey” section as a table: question / chosen answer / comment box
+     • “Survey” section as a table: question / chosen answer / comment
      • Up to 8 images (two batches of 4)
     """
 
@@ -94,13 +87,13 @@ def generate_pdf(
 
     # ─── Top Blue Banner ───────────────────────────────────────────────────────────
     banner_height = 80
-    c.setFillColorRGB(0.12, 0.68, 0.80)  # a light-blue
+    c.setFillColorRGB(0.12, 0.68, 0.80)  # light-blue
     c.rect(0, height - banner_height, width, banner_height, fill=1, stroke=0)
 
     # Project Title (white, bold, large)
     c.setFont("Helvetica-Bold", 24)
     c.setFillColor(colors.white)
-    c.drawString(40, height - 45, project_title[:60])  # truncated if too long
+    c.drawString(40, height - 45, project_title[:60])
 
     # Site Address (white, normal, smaller)
     c.setFont("Helvetica", 12)
@@ -121,7 +114,7 @@ def generate_pdf(
     # Prepared By on right
     c.drawRightString(width - 40, height - banner_height - 20, f"Prepared By: {prepared_by}")
 
-    # ─── “Weather” Section (light-blue header + details) ─────────────────────────────
+    # ─── “Weather” Section (light-blue header + details) ────────────────────────────
     weather_top = height - banner_height - sub_banner_height - 40
     weather_header_height = 25
     c.setFillColorRGB(0.12, 0.68, 0.80)
@@ -139,7 +132,7 @@ def generate_pdf(
     c.drawString(40, weather_label_y, f"Current Time (ABQ): {now_abq_str}")
     c.drawString(300, weather_label_y, f"Temperature (°F): {temp_str}")
 
-    # ─── “Brief Summary” Section ────────────────────────────────────────────────────
+    # ─── “Brief Summary” Section ───────────────────────────────────────────────────
     summary_top = weather_label_y - 30
     c.setFont("Helvetica-Bold", 12)
     c.drawString(40, summary_top, "Brief Summary:")
@@ -190,7 +183,7 @@ def generate_pdf(
         c.drawString(col1_x, y, question_text)
         # Draw the chosen answer (col2)
         c.drawString(col2_x, y, f"▶  {answer}")
-        # Draw the comment box (col3), if any
+        # Draw the comment (col3), if any
         if comment.strip():
             c.setFont("Helvetica-Oblique", 10)
             c.setFillColor(colors.darkgray)
