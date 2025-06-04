@@ -17,27 +17,34 @@ st.set_page_config(page_title="Site Visit Report", layout="centered")
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 2) Function to fetch current temperature for Albuquerque, NM
+# 2) Function to fetch current temperature for Albuquerque, NM (via Open‐Meteo)
 # ────────────────────────────────────────────────────────────────────────────────
 
-def get_current_temperature(api_key: str) -> str:
+def get_current_temperature_abq() -> str:
     """
-    Query OpenWeatherMap API for current temperature (°F) in Albuquerque, NM.
-    Returns a one‐decimal string (e.g. "75.2") or "N/A" on any error.
+    Uses the Open‐Meteo free API to fetch the current temperature (°F)
+    in Albuquerque, NM (latitude 35.0844, longitude -106.6504), in the
+    America/Denver timezone. Returns a one‐decimal string (e.g. "75.2")
+    or "N/A" on error.
     """
     try:
-        url = "https://api.openweathermap.org/data/2.5/weather"
+        url = "https://api.open-meteo.com/v1/forecast"
         params = {
-            "q": "Albuquerque,US",
-            "units": "imperial",
-            "appid": api_key,
+            "latitude": 35.0844,
+            "longitude": -106.6504,
+            "current_weather": True,
+            "temperature_unit": "fahrenheit",
+            "timezone": "America/Denver"
         }
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
-        if resp.status_code == 200 and "main" in data:
-            temp_f = data["main"].get("temp")
-            if isinstance(temp_f, (int, float)):
-                return f"{temp_f:.1f}"
+        if (
+            resp.status_code == 200 
+            and "current_weather" in data 
+            and "temperature" in data["current_weather"]
+        ):
+            temp_f = data["current_weather"]["temperature"]
+            return f"{temp_f:.1f}"
         return "N/A"
     except Exception:
         return "N/A"
@@ -55,20 +62,19 @@ def generate_pdf(
     survey_responses: dict,
     image_files_batch1,
     image_files_batch2,
-    api_key: str,
 ) -> bytes:
     """
     Creates a PDF containing:
       • Current Albuquerque time and temperature (°F)
-      • Visitor info, site address, summary
+      • Visitor info, site_address, summary
       • Survey answers + comments
       • Up to 8 images (two batches of 4)
-    Returns the PDF file as raw bytes.
+    Returns the PDF as raw bytes.
     """
     # 3.a) Get ABQ time and temperature
     abq_tz = ZoneInfo("America/Denver")
     now_abq = datetime.now(abq_tz).strftime("%Y-%m-%d %H:%M:%S")
-    temp_str = get_current_temperature(api_key) if api_key else "N/A"
+    temp_str = get_current_temperature_abq()
 
     # 3.b) Create a temporary PDF
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
@@ -221,7 +227,7 @@ visitor_name = st.text_input("Your Name", max_chars=50)
 visit_date   = st.date_input("Date of Visit", value=datetime.today())
 site_address = st.text_input("Site Address / Location", max_chars=100)
 summary      = st.text_area(
-    "Brief Summary", help="Describe what you saw/did on site (use Enter to create new lines)", height=120
+    "Brief Summary", help="Describe what you saw/did on site (use Enter for new lines)", height=120
 )
 
 # 4.b) Survey with comment boxes
@@ -291,33 +297,18 @@ if image_files_batch2 and len(image_files_batch2) > 4:
     st.warning("Please only upload up to 4 images in batch 2.")
     image_files_batch2 = image_files_batch2[:4]
 
-# 4.d) OpenWeatherMap API key (optional)
-st.markdown("---")
-st.info(
-    "If you want the PDF to include current Albuquerque temperature, enter your OpenWeatherMap API key. "
-    "Otherwise temperature will default to “N/A.”"
-)
-owm_api_key = st.text_input(
-    "OpenWeatherMap API Key",
-    type="password",
-    help="Sign up at https://openweathermap.org/ to get a free key.",
-)
-
-# 4.e) Show live ABQ time + temperature on the form
+# 4.d) Show live ABQ time + temperature on the form
 abq_tz  = ZoneInfo("America/Denver")
 now_abq = datetime.now(abq_tz).strftime("%Y-%m-%d %H:%M:%S")
 st.write(f"**Current Time (ABQ):** {now_abq}")
 
-if owm_api_key:
-    temp_live = get_current_temperature(owm_api_key)
-    if temp_live != "N/A":
-        st.write(f"**Current Temperature (°F):** {temp_live}")
-    else:
-        st.info("Unable to fetch temperature. Verify your API key.")
+temp_live = get_current_temperature_abq()
+if temp_live != "N/A":
+    st.write(f"**Current Temperature (°F):** {temp_live}")
 else:
-    st.info("No API key entered → temperature will show as “N/A” in PDF.")
+    st.info("Unable to fetch temperature for ABQ. It will show as “N/A” in PDF.")
 
-# 4.f) Generate & download PDF
+# 4.e) Generate & download PDF
 st.markdown("---")
 if st.button("Generate PDF"):
     # Must have name, address, summary
@@ -342,7 +333,6 @@ if st.button("Generate PDF"):
                     survey_responses=survey_answers,
                     image_files_batch1=image_files_batch1,
                     image_files_batch2=image_files_batch2,
-                    api_key=owm_api_key,
                 )
         except Exception as e:
             st.error(f"🚨 Error generating PDF:\n\n{e}")
