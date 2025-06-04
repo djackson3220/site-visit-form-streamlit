@@ -1,390 +1,307 @@
+# streamlit_app.py
+
 import os
 import tempfile
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, date
 
 import streamlit as st
-from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
 
-# ────────────────────────────────────────────────────────────────────────────────
-# 1) PAGE CONFIGURATION
-# ────────────────────────────────────────────────────────────────────────────────
-
+#
+# ────────────────────────────────────────────────────────────────────── START PAGE SETUP ─────
+#
 st.set_page_config(page_title="Site Visit Report", layout="centered")
-
-# ────────────────────────────────────────────────────────────────────────────────
-# 2) WEATHER & TIME FETCHING (Albuquerque, NM)
-# ────────────────────────────────────────────────────────────────────────────────
-
-# Coordinates for Albuquerque, NM
-LATITUDE = 35.0844
-LONGITUDE = -106.6504
-
-def fetch_current_temperature(lat: float, lon: float) -> float | None:
-    """
-    Queries Open‐Meteo's "current_weather" endpoint for the given lat/lon.
-    Returns the temperature in Fahrenheit, or None if something goes wrong.
-    """
-    try:
-        url = (
-            f"https://api.open-meteo.com/v1/forecast?"
-            f"latitude={lat}&longitude={lon}&current_weather=true&temperature_unit=fahrenheit"
-        )
-        r = requests.get(url, timeout=5)
-        r.raise_for_status()
-        data = r.json()
-        return data.get("current_weather", {}).get("temperature")
-    except Exception:
-        return None
-
-# Get current local time (assuming server time is close enough to ABQ time)
-current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-# Attempt to fetch temperature (°F)
-current_temp = fetch_current_temperature(LATITUDE, LONGITUDE)
-if current_temp is None:
-    temp_display = "–"
-else:
-    # Round to whole number
-    temp_display = f"{round(current_temp)}°F"
-
-
-# ────────────────────────────────────────────────────────────────────────────────
-# 3) PDF GENERATION FUNCTION
-# ────────────────────────────────────────────────────────────────────────────────
-
-def generate_pdf(
-    project_title: str,
-    site_address: str,
-    visit_date: str,
-    prepared_by: str,
-    summary: str,
-    survey_responses: dict,
-    image_files_batch1,
-    image_files_batch2,
-    time_str: str,
-    temp_str: str,
-) -> bytes:
-    """
-    Creates a PDF with the following layout:
-      • Top light-blue banner: project_title (white, large) / site_address (white, smaller)
-      • A thin strip JUST BELOW that showing “Current Time: …    Current Temp: …” in white on a slightly darker blue
-      • Black sub-banner: "Date of Visit: <visit_date>" on left, "Prepared By: <prepared_by>" on right
-      • “Brief Summary” text block
-      • “Survey” table: question / chosen answer / comment
-      • Up to 8 images (two batches of up to 4 each)
-    """
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    tmp_path = tmp.name
-    tmp.close()
-
-    c = canvas.Canvas(tmp_path, pagesize=letter)
-    width, height = letter
-
-    # ─── Top Blue Banner ───────────────────────────────────────────────────────────
-    banner_height = 80
-    c.setFillColorRGB(0.12, 0.68, 0.80)  # light-blue
-    c.rect(0, height - banner_height, width, banner_height, fill=1, stroke=0)
-
-    # Project Title (white, bold, large)
-    c.setFont("Helvetica-Bold", 24)
-    c.setFillColor(colors.white)
-    c.drawString(40, height - 45, project_title[:60])
-
-    # Site Address (white, normal, smaller)
-    c.setFont("Helvetica", 12)
-    c.drawString(40, height - 65, site_address[:70])
-
-    # ─── Thin Darker-Blue Strip (Time & Temperature) ───────────────────────────────
-    strip_height = 20
-    c.setFillColorRGB(0.05, 0.45, 0.60)  # darker-blue
-    c.rect(0, height - banner_height - strip_height, width, strip_height, fill=1, stroke=0)
-
-    c.setFont("Helvetica", 10)
-    c.setFillColor(colors.white)
-    # Draw “Current Time” on left
-    c.drawString(40, height - banner_height - strip_height + 5, f"Current Time: {time_str}")
-    # Draw “Current Temperature” on right
-    c.drawRightString(width - 40, height - banner_height - strip_height + 5, f"Current Temp: {temp_str}")
-
-    # ─── Black Sub-Banner (Date of Visit / Prepared By) ───────────────────────────
-    sub_banner_height = 30
-    c.setFillColorRGB(0, 0, 0)  # black
-    y_black = height - banner_height - strip_height - sub_banner_height
-    c.rect(0, y_black, width, sub_banner_height, fill=1, stroke=0)
-
-    c.setFont("Helvetica-Bold", 10)
-    c.setFillColor(colors.white)
-    # Date of Visit on left
-    c.drawString(40, y_black + 8, f"Date of Visit: {visit_date}")
-    # Prepared By on right
-    c.drawRightString(width - 40, y_black + 8, f"Prepared By: {prepared_by}")
-
-    # ─── Brief Summary Section ────────────────────────────────────────────────────
-    summary_top = y_black - 30
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.black)
-    c.drawString(40, summary_top, "Brief Summary:")
-
-    text_object = c.beginText(40, summary_top - 18)
-    text_object.setFont("Helvetica", 11)
-    for line in summary.split("\n"):
-        text_object.textLine(line)
-    c.drawText(text_object)
-
-    # Calculate Y after summary
-    summary_lines = summary.count("\n") + 1
-    y_after_summary = summary_top - 18 - (summary_lines * 14) - 20
-    if y_after_summary < 200:
-        c.showPage()
-        y_after_summary = height - 80
-
-    # ─── Survey Section ──────────────────────────────────────────────────────────
-    survey_header_y = y_after_summary
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(40, survey_header_y, "Survey Responses:")
-
-    col1_x = 40
-    col2_x = 300
-    col3_x = 370
-    line_height = 16
-    y = survey_header_y - 20
-
-    survey_questions = {
-        "Q1": "1) Did weather cause any delays?",
-        "Q2": "2) Any instruction Contractor and Contractor’s actions?",
-        "Q3": "3) Any general comments or unusual events?",
-        "Q4": "4) Any schedule delays occur?",
-        "Q5": "5) Materials on site?",
-        "Q6": "6) Contractor and Subcontractor Equipment onsite?",
-        "Q7": "7) Testing?",
-        "Q8": "8) Any visitors on site?",
-        "Q9": "9) Any accidents on site today?",
-    }
-
-    for key, question_text in survey_questions.items():
-        answer, comment = survey_responses.get(key, ("N/A", ""))
-        c.setFont("Helvetica", 11)
-        c.setFillColor(colors.black)
-        c.drawString(col1_x, y, question_text)
-
-        c.drawString(col2_x, y, f"▶ {answer}")
-
-        if comment.strip():
-            c.setFont("Helvetica-Oblique", 10)
-            c.setFillColor(colors.darkgray)
-            c.drawString(col3_x, y, f"Comment: {comment}")
-
-        y -= line_height
-        if y < 150:
-            c.showPage()
-            y = height - 80
-
-    # ─── Site Photos Section ─────────────────────────────────────────────────────
-    if y < 200:
-        c.showPage()
-        y = height - 80
-
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.black)
-    c.drawString(40, y, "Site Photos:")
-    y -= 20
-
-    def draw_images_batch(start_x, start_y, files):
-        """
-        Draw up to 4 images (scaled to width=150), wrapping to the next row if needed.
-        Returns new Y after drawing.
-        """
-        x = start_x
-        max_h = 0
-        for uploaded in files or []:
-            try:
-                img = ImageReader(uploaded)
-                iw, ih = img.getSize()
-                scale = 150.0 / float(iw)
-                w_img = 150
-                h_img = ih * scale
-
-                if x + w_img > width - 40:
-                    x = start_x
-                    start_y -= (max_h + 20)
-                    max_h = 0
-
-                c.drawImage(img, x, start_y - h_img, width=w_img, height=h_img)
-                x += w_img + 20
-                max_h = max(max_h, h_img)
-            except Exception:
-                continue
-
-        return start_y - max_h - 20
-
-    # Draw first batch
-    y = draw_images_batch(40, y, image_files_batch1)
-
-    # Draw second batch if present
-    if image_files_batch2:
-        if y < 80:
-            c.showPage()
-            y = height - 80
-        y = draw_images_batch(40, y, image_files_batch2)
-
-    c.save()
-    with open(tmp_path, "rb") as f:
-        data = f.read()
-    os.remove(tmp_path)
-    return data
-
-
-# ────────────────────────────────────────────────────────────────────────────────
-# 3) STREAMLIT APP LAYOUT
-# ────────────────────────────────────────────────────────────────────────────────
-
 st.title("Site Visit Report 📋")
 
-# 3.a) Show current time & temperature at top
+#
+# ────────────────────────────────────────────────────────────────────── FETCH CURRENT TIME & TEMP ─────
+#
+# 1) Current server time
+now = datetime.now()
+current_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+# 2) Fetch Albuquerque, NM temperature from OpenWeatherMap
+#    You must set OWM_API_KEY in Streamlit secrets (under Settings → Secrets).
+owm_key = st.secrets.get("OWM_API_KEY", None)
+
+def fetch_abq_temperature(api_key: str) -> str:
+    """
+    Calls OpenWeatherMap One Call API for Albuquerque, NM (lat=35.0853, lon=-106.6056).
+    Returns a string like "64°F" or "N/A" if something went wrong.
+    """
+    if not api_key:
+        return "N/A"
+    try:
+        # Albuquerque coordinates
+        lat, lon = 35.0853, -106.6056
+        url = (
+            f"https://api.openweathermap.org/data/2.5/onecall?"
+            f"lat={lat}&lon={lon}&units=imperial&appid={api_key}"
+        )
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        temp_f = data["current"]["temp"]  # in Fahrenheit
+        return f"{round(temp_f)}°F"
+    except Exception:
+        return "N/A"
+
+current_temp_str = fetch_abq_temperature(owm_key)
+
+# Display at top
 st.markdown(
     f"""
-    <div style="background-color:#077d99; color:white; padding:10px 20px; border-radius:4px;">
-      <strong>Current Time:</strong> {current_time}  | <strong>Current Temp (ABQ, NM):</strong> {temp_display}
+    <div style="background-color:#006e8e; color:white; padding:10px; border-radius:4px;">
+        <strong>Current Time:</strong> {current_time_str} &nbsp;|&nbsp;
+        <strong>Current Temp (ABQ, NM):</strong> {current_temp_str}
     </div>
     """,
     unsafe_allow_html=True,
 )
+st.write("")  # small spacing
 
-# 3.b) Project Title, Address, Date of Visit, Prepared By
-project_title = st.text_input(
-    "Project Title",
-    value="REUSE PIPELINE EXTENSION TO WINROCK",
-    help="E.g. REUSE PIPELINE EXTENSION TO WINROCK",
-)
-site_address = st.text_input(
-    "Site Address / Location",
-    value="Constitution Ave NE, Albuquerque, NM 87110",
-)
-visit_date = st.date_input(
-    "Date of Visit",
-    value=date.today(),
-    help="Select the date you visited the site",
-)
-prepared_by = st.text_input(
-    "Prepared By",
-    value="Arlee Engineer",
-    help="Name of person preparing this report",
-)
 
-# 3.c) Brief Summary
-st.markdown("---")
-st.subheader("Brief Summary")
-summary = st.text_area(
-    "Describe what you saw/did on site (use Enter for line breaks)",
-    height=120,
-)
+#
+# ────────────────────────────────────────────────────────────────────── USER INPUTS ─────
+#
+with st.form(key="site_visit_form"):
+    # Project Title (free‐text)
+    project_title = st.text_input("Project Title", max_chars=80)
 
-# 3.d) Survey Section
-st.markdown("---")
-st.subheader("Survey")
+    # Site Address / Location
+    site_address = st.text_input("Site Address / Location", max_chars=120)
 
-survey_questions = [
-    "1) Did weather cause any delays?",
-    "2) Any instruction Contractor and Contractor’s actions?",
-    "3) Any general comments or unusual events?",
-    "4) Any schedule delays occur?",
-    "5) Materials on site?",
-    "6) Contractor and Subcontractor Equipment onsite?",
-    "7) Testing?",
-    "8) Any visitors on site?",
-    "9) Any accidents on site today?",
-]
+    # Date of Visit (defaults to today)
+    visit_date = st.date_input("Date of Visit", value=date.today())
 
-survey_answers = {}
-for idx, qtext in enumerate(survey_questions, start=1):
-    q_key = f"Q{idx}"
-    comm_key = f"{q_key}_comment"
+    st.markdown("---")
+    st.subheader("Brief Summary")
+    summary = st.text_area("Describe what you saw / did on site", height=120)
 
-    col1, col2, col3 = st.columns([4, 2, 6])
-    with col1:
-        st.write(f"**{qtext}**")
-    with col2:
-        choice = st.radio(
-            label="",
-            options=("N/A", "No", "Yes"),
-            index=0,
-            key=q_key,
-            horizontal=True,
-        )
-    with col3:
-        comment = st.text_input(
-            label="",
-            placeholder="Optional comment…",
-            key=comm_key,
-        )
-    survey_answers[q_key] = (choice, comment)
+    st.markdown("---")
+    st.subheader("Survey")
 
-# 3.e) Image Upload (Two Batches of up to 4 each)
-st.markdown("---")
-st.subheader("Site Photos")
-
-image_files_batch1 = st.file_uploader(
-    "Upload images (batch 1 of 2, up to 4 pics)",
-    type=["png", "jpg", "jpeg"],
-    accept_multiple_files=True,
-    key="batch1",
-)
-if image_files_batch1 and len(image_files_batch1) > 4:
-    st.warning("Please only upload up to 4 images in batch 1.")
-    image_files_batch1 = image_files_batch1[:4]
-
-image_files_batch2 = st.file_uploader(
-    "Upload images (batch 2 of 2, up to 4 pics)",
-    type=["png", "jpg", "jpeg"],
-    accept_multiple_files=True,
-    key="batch2",
-)
-if image_files_batch2 and len(image_files_batch2) > 4:
-    st.warning("Please only upload up to 4 images in batch 2.")
-    image_files_batch2 = image_files_batch2[:4]
-
-# 3.f) Generate & Download Button
-st.markdown("---")
-if st.button("Generate PDF"):
-    missing = []
-    if not project_title.strip():
-        missing.append("• Project Title")
-    if not site_address.strip():
-        missing.append("• Site Address")
-    if not prepared_by.strip():
-        missing.append("• Prepared By")
-    if not summary.strip():
-        missing.append("• Brief Summary")
-
-    if missing:
-        st.error("Please fill in the following:\n" + "\n".join(missing))
-    else:
-        try:
-            with st.spinner("Creating PDF…"):
-                pdf_bytes = generate_pdf(
-                    project_title=project_title,
-                    site_address=site_address,
-                    visit_date=visit_date.strftime("%Y-%m-%d"),
-                    prepared_by=prepared_by,
-                    summary=summary,
-                    survey_responses=survey_answers,
-                    image_files_batch1=image_files_batch1,
-                    image_files_batch2=image_files_batch2,
-                    time_str=current_time,
-                    temp_str=temp_display,
-                )
-        except Exception as e:
-            st.error(f"🚨 Error generating PDF:\n{e}")
-        else:
-            filename = f"site_visit_report_{visit_date.strftime('%Y%m%d')}.pdf"
-            st.success("✅ PDF created!")
-            st.download_button(
-                label="Download PDF",
-                data=pdf_bytes,
-                file_name=filename,
-                mime="application/pdf",
+    # For each question, we show: Question text, N/A/No/Yes radio, + a comment box to the right.
+    def question_with_comment(label: str, key_base: str):
+        cols = st.columns([1, 1])
+        with cols[0]:
+            choice = st.radio(
+                label,
+                ("N/A", "No", "Yes"),
+                index=0,
+                key=f"{key_base}_choice",
+                horizontal=True,
             )
+        with cols[1]:
+            comment = st.text_input(
+                f"Comments for: {label}",
+                key=f"{key_base}_comment",
+            )
+        return choice, comment
+
+    q1, q1_comment = question_with_comment("1. Did weather cause any delays?", "q1")
+    q2, q2_comment = question_with_comment(
+        "2. Any instruction Contractor and Contractor’s actions?", "q2"
+    )
+    q3, q3_comment = question_with_comment(
+        "3. Any general comments or unusual events?", "q3"
+    )
+    q4, q4_comment = question_with_comment("4. Any schedule delays occur?", "q4")
+    q5, q5_comment = question_with_comment("5. Materials on site?", "q5")
+    q6, q6_comment = question_with_comment(
+        "6. Contractor and Subcontractor Equipment onsite?", "q6"
+    )
+    q7, q7_comment = question_with_comment("7. Testing?", "q7")
+    q8, q8_comment = question_with_comment("8. Any visitors on site?", "q8")
+    q9, q9_comment = question_with_comment("9. Any accidents on site today?", "q9")
+
+    st.markdown("---")
+    st.subheader("Upload Images (up to 8 pics total)")
+
+    # Two separate uploaders: batch1 and batch2, each up to 4 images
+    uploaded_batch1 = st.file_uploader(
+        "Upload images (batch 1 of 2, up to 4 pics)",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key="images1",
+    )
+    if len(uploaded_batch1 or []) > 4:
+        st.warning("Please upload at most 4 images in batch 1.")
+        uploaded_batch1 = uploaded_batch1[:4]
+
+    uploaded_batch2 = st.file_uploader(
+        "Upload images (batch 2 of 2, up to 4 pics)",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key="images2",
+    )
+    if len(uploaded_batch2 or []) > 4:
+        st.warning("Please upload at most 4 images in batch 2.")
+        uploaded_batch2 = uploaded_batch2[:4]
+
+    submitted = st.form_submit_button(label="Generate PDF")
+
+#
+# ────────────────────────────────────────────────────────────────────── PDF GENERATION ─────
+#
+def generate_pdf_bytes(
+    project_title: str,
+    site_address: str,
+    visit_date: date,
+    summary: str,
+    survey_answers: dict,
+    survey_comments: dict,
+    image_files: list,
+) -> bytes:
+    """
+    Construct a PDF (in memory) using ReportLab. Returns raw PDF bytes.
+    """
+    # 1) Create a temporary file
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    tmp.close()
+    pdf_path = tmp.name
+
+    c = canvas.Canvas(pdf_path, pagesize=letter)
+    w, h = letter  # width, height in points
+
+    # ── Header ──────────────────────────────────────────────
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(50, h - 50, "Site Visit Report")
+
+    c.setFont("Helvetica", 12)
+    c.drawString(50, h - 80, f"Project: {project_title}")
+    c.drawString(50, h - 100, f"Location: {site_address}")
+    c.drawString(350, h - 80, f"Date of Visit: {visit_date.strftime('%Y-%m-%d')}")
+
+    # ── Brief Summary Box ───────────────────────────────────
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, h - 140, "Brief Summary:")
+    text = c.beginText(50, h - 160)
+    text.setFont("Helvetica", 12)
+    for line in summary.split("\n"):
+        text.textLine(line)
+    c.drawText(text)
+
+    # ── Survey ──────────────────────────────────────────────
+    survey_top = h - 300
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, survey_top, "Survey:")
+
+    # Each question + answer + comment
+    line_y = survey_top - 20
+    c.setFont("Helvetica", 12)
+    for i in range(1, 10):
+        q_text = survey_answers[f"q{i}_text"]
+        ans = survey_answers[f"q{i}_ans"]
+        comm = survey_comments[f"q{i}_comm"]
+
+        # Draw the question number + text
+        c.drawString(50, line_y, q_text)
+
+        # Draw the answer text
+        c.drawString(350, line_y, f"Answer: {ans}")
+
+        # Draw the comment (if any)
+        if comm:
+            c.setFont("Helvetica-Oblique", 11)
+            c.drawString(450, line_y, f"Comment: {comm}")
+            c.setFont("Helvetica", 12)
+
+        line_y -= 20
+
+    # ── Images ──────────────────────────────────────────────
+    if image_files:
+        # reserve a portion of the lower page for images
+        y_pos = line_y - 20
+        max_width = 100
+        max_height = 75
+        x_pos = 50
+
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(50, y_pos, "Photos:")
+        y_pos -= 15
+
+        for img_file in image_files:
+            try:
+                img_data = img_file.read()
+                img_reader = canvas.ImageReader(img_data)
+                iw, ih = img_reader.getSize()
+
+                scale = min(max_width / iw, max_height / ih)
+                draw_w, draw_h = iw * scale, ih * scale
+
+                c.drawImage(
+                    img_reader,
+                    x_pos,
+                    y_pos - draw_h,
+                    width=draw_w,
+                    height=draw_h,
+                )
+                x_pos += draw_w + 10
+                if x_pos + max_width > w - 50:
+                    x_pos = 50
+                    y_pos -= max_height + 10
+            except Exception:
+                continue
+
+    c.showPage()
+    c.save()
+
+    # Read the file’s bytes and delete it
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+    os.remove(pdf_path)
+    return pdf_bytes
+
+
+if submitted:
+    # Collect survey answers and comments in dictionaries
+    survey_answers = {}
+    survey_comments = {}
+    for i, q in enumerate(
+        [
+            "1. Did weather cause any delays?",
+            "2. Any instruction Contractor and Contractor’s actions?",
+            "3. Any general comments or unusual events?",
+            "4. Any schedule delays occur?",
+            "5. Materials on site?",
+            "6. Contractor and Subcontractor Equipment onsite?",
+            "7. Testing?",
+            "8. Any visitors on site?",
+            "9. Any accidents on site today?",
+        ],
+        start=1,
+    ):
+        survey_answers[f"q{i}_text"] = q
+        survey_answers[f"q{i}_ans"] = st.session_state.get(f"q{i}_choice", "N/A")
+        survey_comments[f"q{i}_comm"] = st.session_state.get(f"q{i}_comment", "")
+
+    # Combine images from both batches
+    all_images = []
+    if uploaded_batch1:
+        all_images.extend(uploaded_batch1)
+    if uploaded_batch2:
+        all_images.extend(uploaded_batch2)
+
+    # Generate PDF bytes
+    try:
+        pdf_bytes = generate_pdf_bytes(
+            project_title=project_title,
+            site_address=site_address,
+            visit_date=visit_date,
+            summary=summary,
+            survey_answers=survey_answers,
+            survey_comments=survey_comments,
+            image_files=all_images,
+        )
+        st.success("PDF generated successfully!")
+        st.download_button(
+            "Download PDF",
+            data=pdf_bytes,
+            file_name=f"SiteVisit_{visit_date.strftime('%Y%m%d')}.pdf",
+            mime="application/pdf",
+        )
+    except Exception as e:
+        st.error(f"Error generating PDF: {e}")
